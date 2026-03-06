@@ -1,110 +1,169 @@
 import Anthropic from '@anthropic-ai/sdk';
-import fetch from 'node-fetch';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// ── Server-side cache: lotId → {result, timestamp} ──
+const cache = new Map();
+const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+function getCached(key) {
+  const entry = cache.get(key);
+  if (entry && Date.now() - entry.ts < CACHE_TTL) return entry.data;
+  cache.delete(key);
+  return null;
+}
+
+function setCached(key, data) {
+  // Keep cache from growing unbounded
+  if (cache.size > 500) {
+    const oldest = [...cache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+    cache.delete(oldest[0]);
+  }
+  cache.set(key, { data, ts: Date.now() });
+}
+
+function calcBid(total, { targetMargin, buyersPremium, fbFee, effortCost }) {
+  const fbFeeAmt = total * (fbFee / 100);
+  const profitAmt = total * (targetMargin / 100);
+  const maxBid = Math.max(0, Math.floor((total - fbFeeAmt - profitAmt - effortCost) / (1 + buyersPremium / 100)));
+  return {
+    estimatedSaleValue: total,
+    fbFee: Math.round(fbFeeAmt),
+    targetProfit: Math.round(profitAmt),
+    effortCost,
+    buyersPremium: `${buyersPremium}%`,
+    maxBid,
+    expectedProfit: Math.round(total - maxBid * (1 + buyersPremium / 100) - fbFeeAmt - effortCost),
+  };
+}
+
+// ── Single lot analysis (kept for detail page / fallback) ──
 export async function analyzeLot(req, res) {
-  const { description, imageUrl, settings } = req.body;
+  const { description, lotId, settings } = req.body;
 
   if (!description || description.trim().length < 3) {
     return res.status(400).json({ error: 'Please provide a lot description.' });
   }
 
-  const {
-    targetMargin = 30,
-    buyersPremium = 15,
-    fbFee = 5,
-    effortCost = 10,
-  } = settings || {};
+  const s = { targetMargin: 30, buyersPremium: 15, fbFee: 5, effortCost: 10, ...settings };
+
+  // Cache check
+  const cacheKey = lotId || description.slice(0, 60);
+  const cached = getCached(cacheKey);
+  if (cached) return res.json({ ...cached, cached: true });
 
   try {
-    const content = [];
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 600,
+      messages: [{
+        role: 'user',
+        content: `You are an expert reseller. Analyze this auction lot and return ONLY valid JSON, no markdown.
 
-    // If image URL provided (from Chrome extension), fetch and include it
-    if (imageUrl) {
-      try {
-        const imgRes = await fetch(imageUrl);
-        const arrayBuffer = await imgRes.arrayBuffer();
-        const base64 = Buffer.from(arrayBuffer).toString('base64');
-        const mediaType = imgRes.headers.get('content-type') || 'image/jpeg';
-        content.push({
-          type: 'image',
-          source: { type: 'base64', media_type: mediaType, data: base64 },
-        });
-      } catch (imgErr) {
-        console.warn('Could not fetch image:', imgErr.message);
-      }
-    }
+Lot: "${description}"
 
-    content.push({
-      type: 'text',
-      text: `You are an expert reseller who knows Facebook Marketplace prices very well.
+Return:
+{"lotTitle":"short title","items":[{"name":"item","condition":"new|like new|good|fair|poor","estimatedValue":25}],"totalEstimatedValue":100,"lotNotes":"key insight"}
 
-Analyze this auction lot and return ONLY a valid JSON object with no markdown, no explanation, just raw JSON.
+Rules: estimatedValue = realistic LOCAL Facebook Marketplace price (40-60% of retail). Be conservative. Condition unclear = fair.`
+      }],
+    });
 
-Lot info:
-"${description}"
+    const text = message.content[0].text.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(text);
+    const result = { ...parsed, breakdown: calcBid(parsed.totalEstimatedValue || 0, s) };
 
-Return this exact JSON structure:
-{
-  "lotTitle": "short title for this lot",
-  "items": [
-    {
-      "name": "item name",
-      "condition": "new|like new|good|fair|poor",
-      "estimatedValue": 25,
-      "confidence": "high|medium|low",
-      "notes": "brief note about FB Marketplace value"
-    }
-  ],
-  "totalEstimatedValue": 100,
-  "lotNotes": "any important notes about the lot overall"
+    setCached(cacheKey, result);
+    return res.json(result);
+  } catch (err) {
+    console.error('Analyze error:', err.message);
+    return res.status(500).json({ error: err.message || 'Analysis failed.' });
+  }
 }
 
-Rules:
-- estimatedValue = realistic FB Marketplace local price (NOT eBay, NOT retail)
-- FB Marketplace prices are typically 40-60% of retail — be conservative
-- If condition is unclear, assume fair/poor
-- Group very small misc items together
-- totalEstimatedValue is the sum of all items
-- If an image is provided, use it to assess condition and identify items`,
-    });
+// ── BATCH: analyze up to 24 lots in ONE API call ──
+export async function analyzeBatch(req, res) {
+  const { lots, settings } = req.body;
 
+  if (!lots || !Array.isArray(lots) || lots.length === 0) {
+    return res.status(400).json({ error: 'No lots provided.' });
+  }
+
+  const s = { targetMargin: 30, buyersPremium: 15, fbFee: 5, effortCost: 10, ...settings };
+
+  // Split into cached vs needs-analysis
+  const results = {};
+  const toAnalyze = [];
+
+  for (const lot of lots) {
+    const key = lot.lotId || lot.title?.slice(0, 60) || String(Math.random());
+    const cached = getCached(key);
+    if (cached) {
+      results[lot.lotId] = { ...cached, cached: true };
+    } else {
+      toAnalyze.push({ ...lot, _key: key });
+    }
+  }
+
+  if (toAnalyze.length === 0) {
+    return res.json({ results });
+  }
+
+  // Build a single prompt with all lots
+  const lotsText = toAnalyze.map((lot, i) =>
+    `LOT_${i}: [${lot.lotId || 'unknown'}] ${lot.title}${lot.currentBid ? ` | Current bid: $${lot.currentBid}` : ''}${lot.minBid ? ` | Min bid: $${lot.minBid}` : ''}`
+  ).join('\n');
+
+  try {
     const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1024,
-      messages: [{ role: 'user', content }],
+      model: 'claude-haiku-4-5',
+      max_tokens: 200 * toAnalyze.length, // ~200 tokens per lot
+      messages: [{
+        role: 'user',
+        content: `You are an expert reseller who knows Facebook Marketplace prices well.
+
+Analyze each auction lot below and return ONLY a valid JSON array, no markdown, no explanation.
+
+${lotsText}
+
+Return a JSON array with one object per lot in the same order:
+[
+  {
+    "lotId": "the lot id from the input",
+    "lotTitle": "short title",
+    "totalEstimatedValue": 85,
+    "lotNotes": "one line reseller insight",
+    "items": [{"name": "item name", "condition": "good", "estimatedValue": 85}]
+  }
+]
+
+Rules:
+- totalEstimatedValue = realistic LOCAL Facebook Marketplace resale price (40-60% of retail)
+- Be conservative — it's better to underbid than overbid
+- Condition unclear = assume fair/poor
+- Keep lotNotes to one short sentence`
+      }],
     });
 
-    let parsed;
-    try {
-      const text = message.content[0].text.trim();
-      parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-    } catch {
-      return res.status(500).json({ error: 'Failed to parse response. Try again.' });
+    const text = message.content[0].text.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(text);
+
+    // Map results back by lotId
+    for (let i = 0; i < toAnalyze.length; i++) {
+      const lot = toAnalyze[i];
+      const data = parsed[i] || {};
+      const result = {
+        ...data,
+        breakdown: calcBid(data.totalEstimatedValue || 0, s),
+      };
+      setCached(lot._key, result);
+      results[lot.lotId] = result;
     }
 
-    const total = parsed.totalEstimatedValue || 0;
-    const fbFeeAmount = total * (fbFee / 100);
-    const targetProfitAmount = total * (targetMargin / 100);
-    const preBidAmount = total - fbFeeAmount - targetProfitAmount - effortCost;
-    const maxBid = Math.max(0, Math.floor(preBidAmount / (1 + buyersPremium / 100)));
-
-    return res.json({
-      ...parsed,
-      breakdown: {
-        estimatedSaleValue: total,
-        fbFee: Math.round(fbFeeAmount),
-        targetProfit: Math.round(targetProfitAmount),
-        effortCost,
-        buyersPremium: `${buyersPremium}%`,
-        maxBid,
-        expectedProfit: Math.round(total - (maxBid * (1 + buyersPremium / 100)) - fbFeeAmount - effortCost),
-      },
-    });
-
+    return res.json({ results });
   } catch (err) {
-    console.error('Analyze error:', err);
-    return res.status(500).json({ error: 'Analysis failed. Check your API key.' });
+    console.error('Batch analyze error:', err.message);
+    // Fall back to returning empty so extension can degrade gracefully
+    return res.status(500).json({ error: err.message || 'Batch analysis failed.' });
   }
 }
