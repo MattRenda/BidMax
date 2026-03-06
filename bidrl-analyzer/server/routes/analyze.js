@@ -117,36 +117,39 @@ export async function analyzeBatch(req, res) {
   try {
     const message = await anthropic.messages.create({
       model: 'claude-haiku-4-5',
-      max_tokens: 200 * toAnalyze.length, // ~200 tokens per lot
+      max_tokens: Math.min(120 * toAnalyze.length + 200, 4096),
       messages: [{
         role: 'user',
-        content: `You are an expert reseller who knows Facebook Marketplace prices well.
-
-Analyze each auction lot below and return ONLY a valid JSON array, no markdown, no explanation.
+        content: `Expert reseller. Estimate realistic LOCAL Facebook Marketplace resale value for each lot (40-60% retail, conservative). Return ONLY a JSON array, no markdown.
 
 ${lotsText}
 
-Return a JSON array with one object per lot in the same order:
-[
-  {
-    "lotId": "the lot id from the input",
-    "lotTitle": "short title",
-    "totalEstimatedValue": 85,
-    "lotNotes": "one line reseller insight",
-    "items": [{"name": "item name", "condition": "good", "estimatedValue": 85}]
-  }
-]
+JSON array, one object per lot, same order:
+[{"lotId":"id","lotTitle":"short title","totalEstimatedValue":85,"lotNotes":"brief insight"}]
 
-Rules:
-- totalEstimatedValue = realistic LOCAL Facebook Marketplace resale price (40-60% of retail)
-- Be conservative — it's better to underbid than overbid
-- Condition unclear = assume fair/poor
-- Keep lotNotes to one short sentence`
+Local FB prices only. Conservative estimates. No items array.`
       }],
     });
 
-    const text = message.content[0].text.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(text);
+    let rawText = message.content[0].text.replace(/```json|```/g, '').trim();
+    
+    // If truncated, try to recover by closing the JSON array
+    let parsed;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      // Try to recover truncated JSON by finding last complete object
+      const lastBrace = rawText.lastIndexOf('}');
+      if (lastBrace > 0) {
+        try {
+          parsed = JSON.parse(rawText.slice(0, lastBrace + 1) + ']');
+        } catch {
+          parsed = [];
+        }
+      } else {
+        parsed = [];
+      }
+    }
 
     // Map results back by lotId
     for (let i = 0; i < toAnalyze.length; i++) {
@@ -154,6 +157,7 @@ Rules:
       const data = parsed[i] || {};
       const result = {
         ...data,
+        items: data.items || [],
         breakdown: calcBid(data.totalEstimatedValue || 0, s),
       };
       setCached(lot._key, result);
