@@ -11,7 +11,8 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors({ origin: process.env.CLIENT_URL || '*' }));
-app.use(express.json({ limit: '50kb' })); // larger for batch payloads
+app.use(express.json({ limit: '50kb' }));
+app.use(express.static('public')); // larger for batch payloads
 
 // Rate limiting — 60 req/min (batch counts as 1)
 const limiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true });

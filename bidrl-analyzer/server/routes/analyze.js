@@ -2,24 +2,37 @@ import Anthropic from '@anthropic-ai/sdk';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// ── Server-side cache: lotId → {result, timestamp} ──
-const cache = new Map();
-const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+
+// ── Persistent file-backed cache (survives Railway idle restarts) ──
+const CACHE_FILE = '/tmp/bidmax_cache.json';
+const CACHE_TTL = 4 * 60 * 60 * 1000; // 4 hours
+
+let cacheStore = {};
+try {
+  if (existsSync(CACHE_FILE)) {
+    cacheStore = JSON.parse(readFileSync(CACHE_FILE, 'utf8'));
+  }
+} catch { cacheStore = {}; }
+
+function saveCache() {
+  try { writeFileSync(CACHE_FILE, JSON.stringify(cacheStore)); } catch {}
+}
 
 function getCached(key) {
-  const entry = cache.get(key);
-  if (entry && Date.now() - entry.ts < CACHE_TTL) return entry.data;
-  cache.delete(key);
-  return null;
+  const entry = cacheStore[key];
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL) { delete cacheStore[key]; return null; }
+  return entry.data;
 }
 
 function setCached(key, data) {
-  // Keep cache from growing unbounded
-  if (cache.size > 500) {
-    const oldest = [...cache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
-    cache.delete(oldest[0]);
+  const keys = Object.keys(cacheStore);
+  if (keys.length > 1000) {
+    keys.sort((a, b) => cacheStore[a].ts - cacheStore[b].ts).slice(0, 200).forEach(k => delete cacheStore[k]);
   }
-  cache.set(key, { data, ts: Date.now() });
+  cacheStore[key] = { data, ts: Date.now() };
+  saveCache();
 }
 
 function calcBid(total, { targetMargin, buyersPremium, fbFee, effortCost }) {
