@@ -2,17 +2,20 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
 
 dotenv.config();
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors({ origin: process.env.CLIENT_URL || '*' }));
 app.use(express.json({ limit: '50kb' }));
-app.use(express.static(new URL('./public', import.meta.url).pathname));
+app.use(express.static(join(__dirname, 'public')));
 
 // Rate limiting — 60 req/min (batch counts as 1)
 const limiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true });
