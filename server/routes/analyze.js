@@ -183,22 +183,24 @@ Rules:
 
 // ── BATCH analysis ──
 export async function analyzeBatch(req, res) {
-  const { lots, settings, deviceId, sessionToken } = req.body;
+  const { lots, settings, deviceId, sessionToken, fromCache } = req.body;
   if (!lots || !Array.isArray(lots) || lots.length === 0) return res.status(400).json({ error: 'No lots provided.' });
 
-  // Check usage limits
-  let userId = null;
-  if (sessionToken) {
-    try {
-      const { validateSession } = await import('./auth.js');
-      const user = await validateSession(sessionToken);
-      if (user) userId = user.id;
-    } catch {}
-  }
+  // Check how many lots are actually cached on the server
+  const uncachedCount = lots.filter(lot => {
+    const key = lot.lotId || lot.title?.slice(0, 60);
+    return !getCached(key);
+  }).length;
 
-  if (deviceId || userId) {
+  // Only count against limit if there are uncached lots
+  if (!fromCache && uncachedCount > 0 && (deviceId || sessionToken)) {
+    let userId = null;
     try {
-      const { checkAndIncrementUsage } = await import('./auth.js');
+      const { validateSession, checkAndIncrementUsage } = await import('./auth.js');
+      if (sessionToken) {
+        const user = await validateSession(sessionToken);
+        if (user) userId = user.id;
+      }
       const usage = await checkAndIncrementUsage(deviceId, userId);
       if (!usage.allowed) {
         return res.status(402).json({
@@ -208,14 +210,12 @@ export async function analyzeBatch(req, res) {
           limit: usage.limit,
         });
       }
-      // Add usage info to response headers
       if (!usage.isPro) {
         res.setHeader('X-Usage-Used', usage.used);
         res.setHeader('X-Usage-Limit', usage.limit);
       }
     } catch (err) {
       console.error('Usage check error:', err);
-      // Don't block on usage check failure
     }
   }
 
