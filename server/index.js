@@ -7,8 +7,6 @@ import { dirname, join } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
-import { googleAuth, getMe, logout } from './routes/auth.js';
-import { createCheckout, createPortal, handleWebhook } from './routes/billing.js';
 
 dotenv.config();
 
@@ -39,17 +37,37 @@ const limiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true 
 app.use('/api/', limiter);
 app.use('/auth/', rateLimit({ windowMs: 60 * 1000, max: 20 }));
 
+// Core analyze routes — always available
 app.post('/api/analyze', analyzeLot);
 app.post('/api/analyze-batch', analyzeBatch);
 app.post('/api/comps', getEbayComps);
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
-app.post('/auth/google', googleAuth);
-app.get('/auth/me', getMe);
-app.post('/auth/logout', logout);
+// Auth + billing routes — load lazily so startup errors don't kill the server
+async function loadAuthRoutes() {
+  try {
+    const { googleAuth, getMe, logout } = await import('./routes/auth.js');
+    const { createCheckout, createPortal, handleWebhook } = await import('./routes/billing.js');
 
-app.post('/billing/checkout', createCheckout);
-app.post('/billing/portal', createPortal);
-app.post('/billing/webhook', handleWebhook);
+    app.post('/auth/google', googleAuth);
+    app.get('/auth/me', getMe);
+    app.post('/auth/logout', logout);
+    app.post('/billing/checkout', createCheckout);
+    app.post('/billing/portal', createPortal);
+    app.post('/billing/webhook', handleWebhook);
 
-app.listen(PORT, () => console.log(`BidMax server running on port ${PORT}`));
+    console.log('Auth + billing routes loaded');
+  } catch (err) {
+    console.error('Failed to load auth/billing routes:', err.message);
+    // Return helpful errors instead of 404s
+    const errHandler = (_, res) => res.status(503).json({ error: 'Auth service unavailable', detail: err.message });
+    app.post('/auth/google', errHandler);
+    app.get('/auth/me', errHandler);
+    app.post('/billing/checkout', errHandler);
+  }
+}
+
+app.listen(PORT, async () => {
+  console.log(`BidMax server running on port ${PORT}`);
+  await loadAuthRoutes();
+});

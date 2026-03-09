@@ -23,7 +23,7 @@ create table if not exists sessions (
   last_used_at timestamptz default now()
 );
 
--- Usage table (tracks batch analyses per device or user per day)
+-- Usage table
 create table if not exists usage (
   id uuid primary key default gen_random_uuid(),
   device_id text,
@@ -41,12 +41,17 @@ create index if not exists usage_device_date_idx on usage(device_id, date);
 create index if not exists usage_user_date_idx on usage(user_id, date);
 create index if not exists users_google_id_idx on users(google_id);
 
--- Row level security (disable for service role, which we use server-side)
+-- RLS
 alter table users enable row level security;
 alter table sessions enable row level security;
 alter table usage enable row level security;
 
--- Allow service role full access (our server uses service role key)
-create policy "service role full access users" on users using (true) with check (true);
-create policy "service role full access sessions" on sessions using (true) with check (true);
-create policy "service role full access usage" on usage using (true) with check (true);
+-- Drop existing policies if re-running
+drop policy if exists "service role full access users" on users;
+drop policy if exists "service role full access sessions" on sessions;
+drop policy if exists "service role full access usage" on usage;
+
+-- Allow all operations via service role key (used server-side)
+create policy "service role full access users" on users for all using (true) with check (true);
+create policy "service role full access sessions" on sessions for all using (true) with check (true);
+create policy "service role full access usage" on usage for all using (true) with check (true);
