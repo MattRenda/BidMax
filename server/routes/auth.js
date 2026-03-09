@@ -8,14 +8,25 @@ const supabase = createClient(
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const FREE_DAILY_LIMIT = 10;
 
-// ── Verify Google ID token ──
-async function verifyGoogleToken(idToken) {
-  const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`);
+// Verify Google token (handles both access tokens and ID tokens from chrome.identity)
+async function verifyGoogleToken(token) {
+  // Try as access token first (what chrome.identity.getAuthToken returns)
+  const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  if (userInfoRes.ok) {
+    const info = await userInfoRes.json();
+    if (!info.sub) throw new Error('Could not get user info from Google');
+    return { googleId: info.sub, email: info.email, name: info.name };
+  }
+
+  // Fall back to ID token verification
+  const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${token}`);
   if (!res.ok) throw new Error('Invalid Google token');
   const payload = await res.json();
-  if (payload.aud !== GOOGLE_CLIENT_ID) throw new Error('Token client ID mismatch');
   if (payload.exp < Date.now() / 1000) throw new Error('Token expired');
-  return { googleId: payload.sub, email: payload.email, name: payload.name };
+  return { googleId: payload.sub, email: payload.email };
 }
 
 // ── Get or create user from Google ──
@@ -133,20 +144,17 @@ export async function checkAndIncrementUsage(deviceId, userId) {
 // ── POST /auth/google ──
 export async function googleAuth(req, res) {
   try {
-    const { idToken } = req.body;
-    if (!idToken) return res.status(400).json({ error: 'Missing idToken' });
+    const { idToken, accessToken } = req.body;
+    const token = accessToken || idToken;
+    if (!token) return res.status(400).json({ error: 'Missing token' });
 
-    const { googleId, email } = await verifyGoogleToken(idToken);
+    const { googleId, email } = await verifyGoogleToken(token);
     const user = await upsertUser(googleId, email);
     const session = await createSession(user.id);
 
     res.json({
       token: session.token,
-      user: {
-        id: user.id,
-        email: user.email,
-        isPro: user.is_pro,
-      }
+      user: { id: user.id, email: user.email, isPro: user.is_pro }
     });
   } catch (err) {
     console.error('Google auth error:', err);
