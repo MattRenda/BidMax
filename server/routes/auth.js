@@ -169,25 +169,25 @@ export async function getMe(req, res) {
     const user = await validateSession(token);
     if (!user) return res.status(401).json({ error: 'Invalid session' });
 
-    // Get today's usage
     const today = new Date().toISOString().split('T')[0];
-    const { data: usage } = await supabase
-      .from('usage')
-      .select('batch_count')
-      .eq('user_id', user.id)
-      .eq('date', today)
-      .single();
+    const deviceId = req.headers['x-device-id'] || req.query.deviceId;
+
+    let usedCount = 0;
+    if (user.is_pro) {
+      const { data: usage } = await supabase
+        .from('usage').select('batch_count')
+        .eq('user_id', user.id).eq('date', today).single();
+      usedCount = usage?.batch_count || 0;
+    } else if (deviceId) {
+      const { data: usage } = await supabase
+        .from('usage').select('batch_count')
+        .eq('device_id', deviceId).eq('date', today).single();
+      usedCount = usage?.batch_count || 0;
+    }
 
     res.json({
-      user: {
-        id: user.id,
-        email: user.email,
-        isPro: user.is_pro,
-      },
-      usage: {
-        used: usage?.batch_count || 0,
-        limit: user.is_pro ? null : FREE_DAILY_LIMIT,
-      }
+      user: { id: user.id, email: user.email, isPro: user.is_pro },
+      usage: { used: usedCount, limit: user.is_pro ? null : FREE_DAILY_LIMIT },
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
