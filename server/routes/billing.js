@@ -38,7 +38,7 @@ export async function createCheckout(req, res) {
       payment_method_types: ['card'],
       line_items: [{ price: PRICE_ID, quantity: 1 }],
       mode: 'subscription',
-      success_url: `${APP_URL}/success.html?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `https://bidmax-production.up.railway.app/success.html?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${APP_URL}?cancelled=true`,
       metadata: { userId: user.id },
     });
