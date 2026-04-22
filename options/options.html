@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>BidMax Settings</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f172a; color: #f1f5f9;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px; padding: 32px; max-width: 480px; margin: 0 auto;
+    }
+    h1 { font-size: 22px; font-weight: 800; margin-bottom: 6px; }
+    .sub { color: #475569; font-size: 13px; margin-bottom: 28px; }
+    .field { margin-bottom: 20px; }
+    label { display: block; font-size: 11px; font-weight: 700; letter-spacing: 1px;
+            text-transform: uppercase; color: #94a3b8; margin-bottom: 6px; }
+    input {
+      width: 100%; background: #1e293b; border: 1px solid #334155;
+      color: #f1f5f9; border-radius: 6px; padding: 10px 12px;
+      font-size: 14px; outline: none;
+    }
+    input:focus { border-color: #22c55e; }
+    .hint { font-size: 11px; color: #475569; margin-top: 4px; }
+    .save {
+      background: #22c55e; color: #000; font-weight: 800;
+      border: none; border-radius: 6px; padding: 12px 24px;
+      font-size: 14px; cursor: pointer; width: 100%; margin-top: 8px;
+    }
+    .save:hover { background: #16a34a; }
+    .saved { color: #22c55e; font-size: 13px; text-align: center; margin-top: 10px; display: none; }
+    hr { border: none; border-top: 1px solid #1e293b; margin: 28px 0; }
+    h2 { font-size: 15px; font-weight: 700; margin-bottom: 14px; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <h1>⚙ BidMax Settings</h1>
+  <div class="sub">Configure your server and reselling margins.</div>
+
+  <h2>Server</h2>
+  <div class="field">
+    <label>Server URL</label>
+    <input type="url" id="serverUrl" placeholder="https://bidmax-production.up.railway.app">
+    <div class="hint">Your Railway deployment URL.</div>
+  </div>
+
+  <hr>
+  <h2>Your Reselling Margins</h2>
+
+  <div class="field">
+    <label>Target Profit Margin (%)</label>
+    <input type="number" id="targetMargin" value="30" min="0" max="100">
+    <div class="hint">Minimum % profit you want after all fees. Default: 30%</div>
+  </div>
+
+  <div class="field">
+    <label>Facebook Marketplace Fee ($)</label>
+    <input type="number" id="fbFee" value="5" min="0">
+    <div class="hint">Flat fee for FB listing / gas / time to sell. Default: $5</div>
+  </div>
+
+  <div class="field">
+    <label>Effort Cost ($)</label>
+    <input type="number" id="effortCost" value="10" min="0">
+    <div class="hint">Your time picking up the item. Default: $10</div>
+  </div>
+
+  <button class="save" onclick="save()">Save Settings</button>
+  <div class="saved" id="saved">✓ Saved!</div>
+
+  <script>
+    async function load() {
+      const res = await chrome.storage.local.get('bidmax_settings');
+      const s = res.bidmax_settings || {};
+      document.getElementById('serverUrl').value = s.serverUrl || '';
+      document.getElementById('targetMargin').value = s.targetMargin ?? 30;
+      document.getElementById('fbFee').value = s.fbFee ?? 5;
+      document.getElementById('effortCost').value = s.effortCost ?? 10;
+    }
+
+    async function save() {
+      const settings = {
+        serverUrl: document.getElementById('serverUrl').value.trim().replace(/\/$/, ''),
+        targetMargin: parseFloat(document.getElementById('targetMargin').value) || 30,
+        fbFee: parseFloat(document.getElementById('fbFee').value) || 5,
+        effortCost: parseFloat(document.getElementById('effortCost').value) || 10,
+      };
+      await chrome.storage.local.set({ bidmax_settings: settings });
+      const saved = document.getElementById('saved');
+      saved.style.display = 'block';
+      setTimeout(() => saved.style.display = 'none', 2000);
+    }
+
+    load();
+  </script>
+</body>
+</html>
