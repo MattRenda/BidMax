@@ -238,8 +238,15 @@ JSON array, one object per lot, same order:
     const result = {
       ...data,
       lotId: item.id,
-      lotNumber: item.lot_number,  // for cache lookup by lot number
-      itemTitle: item.title,       // for cache lookup by title
+      lotNumber: item.lot_number,
+      itemTitle: item.title,
+      itemUrl: item.item_url,
+      thumbUrl: item.thumb_url,
+      images: (item.images || []).slice(0, 1), // first image only to save space
+      currentBid: parseFloat(item.current_bid) || 0,
+      minimumBid: parseFloat(item.minimum_bid) || 0,
+      bidCount: parseInt(item.bid_count) || 0,
+      buyerPremium: parseFloat(item.buyer_premium) || 13,
       totalEstimatedValue: fbValue,
       valueSource: source,
       ...(ebayPrice && { ebayAvgPrice: ebayPrice }),
