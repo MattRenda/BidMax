@@ -97,8 +97,9 @@ export async function fetchAndAnalyze(req, res) {
         buyerPremium: parseFloat(item.buyer_premium) || 13,
         result: results[item.id] || null,
       }))
-      .filter(r => r.result && r.result.breakdown?.expectedProfit > 0)
-      .sort((a, b) => b.result.breakdown.expectedProfit - a.result.breakdown.expectedProfit);
+      .filter(r => r.result && r.result.breakdown?.expectedProfit >= 10 && r.result.breakdown?.maxBid > 0)
+      .sort((a, b) => b.result.breakdown.expectedProfit - a.result.breakdown.expectedProfit)
+      .slice(0, 50); // cap at top 50
 
     res.json({
       results,
