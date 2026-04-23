@@ -27,7 +27,7 @@ export async function fetchAndAnalyze(req, res) {
   }
 
   const s = { targetMargin: 30, buyersPremium: 15, fbFee: 5, effortCost: 10, ...settings };
-  const cacheKey = `auction_${affiliateId || auctionId}`;
+  const cacheKey = `auction_v2_${affiliateId || auctionId}`; // v2 = includes enriched metadata
 
   // Return full cached result instantly if fresh
   const auctionCached = auctionCache.get(cacheKey);
