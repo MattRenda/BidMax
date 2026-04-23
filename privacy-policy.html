@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BidMax – Privacy Policy</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f8fafc;
+      color: #1e293b;
+      line-height: 1.7;
+    }
+    .container {
+      max-width: 720px;
+      margin: 60px auto;
+      padding: 0 24px 80px;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 48px;
+    }
+    .logo-mark {
+      width: 40px; height: 40px;
+      background: #22c55e;
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 900; font-size: 18px; color: #000;
+    }
+    .logo-text { font-size: 22px; font-weight: 800; color: #0f172a; }
+    h1 {
+      font-size: 32px;
+      font-weight: 900;
+      color: #0f172a;
+      margin-bottom: 8px;
+    }
+    .updated {
+      font-size: 13px;
+      color: #94a3b8;
+      margin-bottom: 40px;
+    }
+    h2 {
+      font-size: 18px;
+      font-weight: 700;
+      color: #0f172a;
+      margin: 36px 0 10px;
+    }
+    p { margin-bottom: 14px; color: #334155; }
+    ul { padding-left: 20px; margin-bottom: 14px; }
+    li { margin-bottom: 6px; color: #334155; }
+    .highlight {
+      background: #f0fdf4;
+      border-left: 4px solid #22c55e;
+      padding: 16px 20px;
+      border-radius: 0 8px 8px 0;
+      margin: 24px 0;
+    }
+    .highlight strong { color: #15803d; }
+    a { color: #22c55e; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    footer {
+      margin-top: 60px;
+      padding-top: 24px;
+      border-top: 1px solid #e2e8f0;
+      font-size: 13px;
+      color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+
+    <div class="logo">
+      <div class="logo-mark">B</div>
+      <div class="logo-text">BidMax</div>
+    </div>
+
+    <h1>Privacy Policy</h1>
+    <div class="updated">Last updated: April 2026</div>
+
+    <div class="highlight">
+      <strong>Short version:</strong> BidMax only collects what's necessary to run the service — your email for sign-in, usage count to enforce free tier limits, and payment info handled entirely by Stripe. We do not sell your data. Ever.
+    </div>
+
+    <h2>What is BidMax?</h2>
+    <p>BidMax is a Chrome extension that analyzes auction lots on BidRL.com and displays a calculated maximum bid and estimated resale profit directly on the auction page. It is designed for resellers who want to make faster, more informed bidding decisions.</p>
+
+    <h2>Data We Collect</h2>
+
+    <h2>1. Account Information (if you sign in)</h2>
+    <p>If you choose to sign in with Google, we collect and store:</p>
+    <ul>
+      <li><strong>Email address</strong> — used to identify your account</li>
+      <li><strong>Google ID</strong> — used to authenticate you securely via Google OAuth</li>
+      <li><strong>Subscription status</strong> — whether you are on the Free or Pro tier</li>
+      <li><strong>Stripe customer ID</strong> — to manage your subscription. Payment details are handled entirely by Stripe and never touch our servers.</li>
+    </ul>
+    <p>Sign-in is optional. Free tier usage is tracked by anonymous device ID if you are not signed in.</p>
+
+    <h2>2. Usage Data</h2>
+    <p>We track the number of auction analyses performed per day to enforce free tier limits (10/day). For signed-in users this is linked to your account. For signed-out users this is linked to an anonymous device ID stored locally in your browser.</p>
+
+    <h2>3. Auction Lot Data</h2>
+    <p>When you browse an auction page on BidRL.com, BidMax reads the lot title and bid information visible on that page and sends it to our analysis server to estimate resale value. This data contains no personal information — only product titles and bid amounts from the public auction listing.</p>
+
+    <h2>4. Local Storage</h2>
+    <p>The following data is stored locally in your browser and never transmitted to our servers:</p>
+    <ul>
+      <li>Your calculator settings (ROI target, buyer's premium, fire deal threshold)</li>
+      <li>Analysis results cache (lot estimates, stored for up to 24 hours)</li>
+      <li>Float button position preference</li>
+      <li>Session token for maintaining your signed-in state</li>
+    </ul>
+
+    <h2>Third-Party Services</h2>
+    <p>BidMax uses the following third-party services:</p>
+    <ul>
+      <li><strong>Anthropic API</strong> — lot title text is sent to generate resale value estimates. No personal data is included. See <a href="https://www.anthropic.com/privacy" target="_blank">anthropic.com/privacy</a>.</li>
+      <li><strong>Google OAuth</strong> — used for sign-in only. See <a href="https://policies.google.com/privacy" target="_blank">policies.google.com/privacy</a>.</li>
+      <li><strong>Stripe</strong> — used for Pro subscription billing. Payment information is handled entirely by Stripe and never stored on our servers. See <a href="https://stripe.com/privacy" target="_blank">stripe.com/privacy</a>.</li>
+      <li><strong>Supabase</strong> — used to store account and usage data securely. See <a href="https://supabase.com/privacy" target="_blank">supabase.com/privacy</a>.</li>
+    </ul>
+
+    <h2>Data Sharing</h2>
+    <p>BidMax does not sell, rent, or share your personal data with any third parties beyond what is required to operate the service (Stripe for billing, Supabase for storage, Anthropic for analysis). We do not use your data for advertising.</p>
+
+    <h2>Data Deletion</h2>
+    <p>You can request deletion of your account and all associated data at any time by emailing <a href="mailto:support@bidmaxapp.com">support@bidmaxapp.com</a>. We will delete your data within 30 days of your request.</p>
+
+    <h2>Children's Privacy</h2>
+    <p>BidMax is not directed at children under the age of 13 and does not knowingly collect any information from children.</p>
+
+    <h2>Changes to This Policy</h2>
+    <p>If this privacy policy changes, the updated date at the top of this page will be revised. Continued use of the extension after changes constitutes acceptance of the updated policy.</p>
+
+    <h2>Contact</h2>
+    <p>If you have any questions about this privacy policy, contact us at: <a href="mailto:support@bidmaxapp.com">support@bidmaxapp.com</a></p>
+
+    <footer>
+      &copy; 2026 BidMax. All rights reserved.
+    </footer>
+
+  </div>
+</body>
+</html>
