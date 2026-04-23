@@ -7,7 +7,6 @@ import { dirname, join } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
-import { fetchAndAnalyze } from './routes/fetchAndAnalyze.js';
 
 dotenv.config();
 
@@ -42,7 +41,6 @@ app.use('/auth/', rateLimit({ windowMs: 60 * 1000, max: 20 }));
 // Core analyze routes — always available
 app.post('/api/analyze', analyzeLot);
 app.post('/api/analyze-batch', analyzeBatch);
-app.post('/api/fetch-and-analyze', fetchAndAnalyze); // NEW: fetches BidRL items + analyzes in one shot
 app.post('/api/comps', getEbayComps);
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
