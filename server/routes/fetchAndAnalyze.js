@@ -132,7 +132,7 @@ function buildRanked(items, results) {
       buyerPremium: parseFloat(item.buyer_premium) || 13,
       result: results[item.id] || null,
     }))
-    .filter(r => r.result && r.result.breakdown?.expectedProfit >= 10 && r.result.breakdown?.maxBid > 0)
+    .filter(r => r.result && r.result.breakdown?.expectedProfit >= 5 && r.result.breakdown?.maxBid > 0)
     .sort((a, b) => b.result.breakdown.expectedProfit - a.result.breakdown.expectedProfit)
     .slice(0, 50);
 }
@@ -238,6 +238,8 @@ JSON array, one object per lot, same order:
     const result = {
       ...data,
       lotId: item.id,
+      lotNumber: item.lot_number,  // for cache lookup by lot number
+      itemTitle: item.title,       // for cache lookup by title
       totalEstimatedValue: fbValue,
       valueSource: source,
       ...(ebayPrice && { ebayAvgPrice: ebayPrice }),
