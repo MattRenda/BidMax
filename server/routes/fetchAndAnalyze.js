@@ -77,7 +77,8 @@ export async function fetchAndAnalyze(req, res) {
 
     for (const item of items) {
       const cached = getCached(item.id);
-      if (cached) {
+      // Only use cache if it has the full metadata (itemUrl added in v2)
+      if (cached && cached.itemUrl) {
         allResults[item.id] = { ...cached, cached: true };
       } else {
         toAnalyze.push(item);
