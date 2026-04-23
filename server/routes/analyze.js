@@ -6,7 +6,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 
 // ── Persistent file-backed cache ──
-const CACHE_FILE = '/tmp/bidmax_cache.json';
+const CACHE_FILE = '/tmp/bidmax_cache_v2.json'; // v2 = includes itemUrl/thumbUrl
 const CACHE_TTL = 4 * 60 * 60 * 1000;
 
 let cacheStore = {};
