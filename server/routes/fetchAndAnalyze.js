@@ -85,8 +85,42 @@ export async function fetchAndAnalyze(req, res) {
       }
     }
 
+    // Build a lookup map from item id → item metadata for enrichment
+    const itemMetaMap = {};
+    items.forEach(item => {
+      itemMetaMap[item.id] = {
+        itemUrl: item.item_url || '',
+        thumbUrl: item.thumb_url || item.images?.[0]?.thumb_url || '',
+        lotNumber: item.lot_number || '',
+        itemTitle: item.title || '',
+        currentBid: parseFloat(item.current_bid) || 0,
+        minimumBid: parseFloat(item.minimum_bid) || 0,
+        bidCount: parseInt(item.bid_count) || 0,
+        buyerPremium: parseFloat(item.buyer_premium) || 13,
+      };
+    });
+
+    // Enrich ALL results with item metadata before sending
+    function enrichResults(results) {
+      for (const [id, result] of Object.entries(results)) {
+        const meta = itemMetaMap[id];
+        if (meta) {
+          result.itemUrl = result.itemUrl || meta.itemUrl;
+          result.thumbUrl = result.thumbUrl || meta.thumbUrl;
+          result.lotNumber = result.lotNumber || meta.lotNumber;
+          result.itemTitle = result.itemTitle || meta.itemTitle;
+          result.currentBid = result.currentBid ?? meta.currentBid;
+          result.minimumBid = result.minimumBid ?? meta.minimumBid;
+          result.bidCount = result.bidCount ?? meta.bidCount;
+          result.buyerPremium = result.buyerPremium ?? meta.buyerPremium;
+        }
+      }
+      return results;
+    }
+
     // Send cached results immediately as first chunk
     if (Object.keys(allResults).length > 0) {
+      enrichResults(allResults);
       const cachedRanked = buildRanked(items, allResults);
       res.write(JSON.stringify({ type: 'chunk', results: allResults, ranked: cachedRanked }) + '\n');
     }
@@ -95,6 +129,7 @@ export async function fetchAndAnalyze(req, res) {
     for (let i = 0; i < toAnalyze.length; i += CHUNK_SIZE) {
       const chunk = toAnalyze.slice(i, i + CHUNK_SIZE);
       const chunkResults = await analyzeChunk(chunk, s);
+      enrichResults(chunkResults);
       Object.assign(allResults, chunkResults);
 
       // Stream this chunk's results immediately
@@ -173,6 +208,14 @@ async function fetchAllBidRLItems({ affiliateId, auctionId }) {
     page++;
   } while (page <= totalPages);
 
+  // Log sample item to verify field names
+  if (allItems.length > 0) {
+    const sample = allItems[0];
+    console.log('[BidRL sample] id:', sample.id, 'lot:', sample.lot_number,
+      'thumb_url:', sample.thumb_url ? 'YES' : 'MISSING',
+      'item_url:', sample.item_url ? 'YES' : 'MISSING',
+      'images count:', sample.images?.length || 0);
+  }
   return allItems;
 }
 
