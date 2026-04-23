@@ -9,11 +9,15 @@ import { getCached, setCached, calcBid, getSmartFBValue } from './analyze.js';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const CHUNK_SIZE = 50; // lots per AI call
+const CHUNK_SIZE = 50;
+
+// Whole-auction result cache — keyed by affiliateId/auctionId
+// So second+ requests return instantly without re-fetching or re-analyzing
+const auctionCache = new Map();
+const AUCTION_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
 // ─────────────────────────────────────────────────────────
 // POST /api/fetch-and-analyze
-// Body: { affiliateId, auctionId, settings, deviceId, sessionToken }
 // ─────────────────────────────────────────────────────────
 export async function fetchAndAnalyze(req, res) {
   const { affiliateId, auctionId, settings, deviceId, sessionToken } = req.body;
@@ -23,17 +27,33 @@ export async function fetchAndAnalyze(req, res) {
   }
 
   const s = { targetMargin: 30, buyersPremium: 15, fbFee: 5, effortCost: 10, ...settings };
+  const cacheKey = `auction_${affiliateId || auctionId}`;
+
+  // Return full cached result instantly if fresh
+  const auctionCached = auctionCache.get(cacheKey);
+  if (auctionCached && Date.now() - auctionCached.ts < AUCTION_CACHE_TTL) {
+    console.log(`[fetchAndAnalyze] Cache hit for ${cacheKey}`);
+    res.setHeader('Content-Type', 'application/x-ndjson');
+    res.write(JSON.stringify({ type: 'chunk', results: auctionCached.data.results, ranked: auctionCached.data.ranked }) + '\n');
+    res.write(JSON.stringify({ type: 'done', total: auctionCached.data.total, fromCache: true }) + '\n');
+    return res.end();
+  }
+
+  // Stream results back as NDJSON chunks
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Transfer-Encoding', 'chunked');
+  res.setHeader('Cache-Control', 'no-cache');
 
   try {
     // 1. Fetch all items from BidRL
     const items = await fetchAllBidRLItems({ affiliateId, auctionId });
     if (!items.length) {
-      return res.json({ results: {}, ranked: [], total: 0 });
+      res.write(JSON.stringify({ type: 'done', total: 0 }) + '\n');
+      return res.end();
     }
 
-    // 2. Usage check — only charge against limit for uncached items
-    const uncachedItems = items.filter(item => !getCached(item.id));
-    if (uncachedItems.length > 0 && (deviceId || sessionToken)) {
+    // 2. Usage check
+    if (deviceId || sessionToken) {
       try {
         const { validateSession, checkAndIncrementUsage } = await import('./auth.js');
         let userId = null;
@@ -43,76 +63,78 @@ export async function fetchAndAnalyze(req, res) {
         }
         const usage = await checkAndIncrementUsage(deviceId, userId);
         if (!usage.allowed) {
-          return res.status(402).json({
-            error: 'Daily limit reached',
-            code: 'LIMIT_REACHED',
-            used: usage.used,
-            limit: usage.limit,
-          });
-        }
-        if (!usage.isPro) {
-          res.setHeader('X-Usage-Used', usage.used);
-          res.setHeader('X-Usage-Limit', usage.limit);
+          res.write(JSON.stringify({ type: 'error', code: 'LIMIT_REACHED', used: usage.used, limit: usage.limit }) + '\n');
+          return res.end();
         }
       } catch (err) {
         console.error('Usage check error:', err.message);
-        // Don't block on usage check failure
       }
     }
 
     // 3. Split cached vs needs analysis
-    const results = {};
+    const allResults = {};
     const toAnalyze = [];
 
     for (const item of items) {
       const cached = getCached(item.id);
       if (cached) {
-        results[item.id] = { ...cached, cached: true };
+        allResults[item.id] = { ...cached, cached: true };
       } else {
         toAnalyze.push(item);
       }
     }
 
-    // 4. Analyze uncached items in chunks
+    // Send cached results immediately as first chunk
+    if (Object.keys(allResults).length > 0) {
+      const cachedRanked = buildRanked(items, allResults);
+      res.write(JSON.stringify({ type: 'chunk', results: allResults, ranked: cachedRanked }) + '\n');
+    }
+
+    // 4. Analyze uncached items chunk by chunk, streaming each result
     for (let i = 0; i < toAnalyze.length; i += CHUNK_SIZE) {
       const chunk = toAnalyze.slice(i, i + CHUNK_SIZE);
       const chunkResults = await analyzeChunk(chunk, s);
-      Object.assign(results, chunkResults);
+      Object.assign(allResults, chunkResults);
+
+      // Stream this chunk's results immediately
+      const chunkRanked = buildRanked(items, allResults);
+      res.write(JSON.stringify({ type: 'chunk', results: chunkResults, ranked: chunkRanked }) + '\n');
     }
 
-    // 5. Rank by estimated profit descending
-    const ranked = items
-      .map(item => ({
-        id: item.id,
-        lotNumber: item.lot_number,
-        title: item.title,
-        currentBid: parseFloat(item.current_bid) || 0,
-        minimumBid: parseFloat(item.minimum_bid) || 0,
-        bidCount: parseInt(item.bid_count) || 0,
-        endsAt: item.end_time,
-        itemUrl: item.item_url,
-        thumbUrl: item.thumb_url,
-        images: item.images || [],
-        category: item.category_name || '',
-        buyerPremium: parseFloat(item.buyer_premium) || 13,
-        result: results[item.id] || null,
-      }))
-      .filter(r => r.result && r.result.breakdown?.expectedProfit >= 10 && r.result.breakdown?.maxBid > 0)
-      .sort((a, b) => b.result.breakdown.expectedProfit - a.result.breakdown.expectedProfit)
-      .slice(0, 50); // cap at top 50
+    // 5. Final done signal
+    const finalRanked = buildRanked(items, allResults);
+    const responseData = { results: allResults, ranked: finalRanked, total: items.length };
+    auctionCache.set(cacheKey, { data: responseData, ts: Date.now() });
 
-    res.json({
-      results,
-      ranked,
-      total: items.length,
-      analyzed: toAnalyze.length,
-      cached: items.length - toAnalyze.length,
-    });
+    res.write(JSON.stringify({ type: 'done', total: items.length, analyzed: toAnalyze.length }) + '\n');
+    res.end();
 
   } catch (err) {
     console.error('fetchAndAnalyze error:', err.message);
-    res.status(500).json({ error: err.message });
+    res.write(JSON.stringify({ type: 'error', error: err.message }) + '\n');
+    res.end();
   }
+}
+
+function buildRanked(items, results) {
+  return items
+    .map(item => ({
+      id: item.id,
+      lotNumber: item.lot_number,
+      title: item.title,
+      currentBid: parseFloat(item.current_bid) || 0,
+      minimumBid: parseFloat(item.minimum_bid) || 0,
+      bidCount: parseInt(item.bid_count) || 0,
+      endsAt: item.end_time,
+      itemUrl: item.item_url,
+      thumbUrl: item.thumb_url,
+      category: item.category_name || '',
+      buyerPremium: parseFloat(item.buyer_premium) || 13,
+      result: results[item.id] || null,
+    }))
+    .filter(r => r.result && r.result.breakdown?.expectedProfit >= 10 && r.result.breakdown?.maxBid > 0)
+    .sort((a, b) => b.result.breakdown.expectedProfit - a.result.breakdown.expectedProfit)
+    .slice(0, 50);
 }
 
 // ─────────────────────────────────────────────────────────
