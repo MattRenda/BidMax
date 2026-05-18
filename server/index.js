@@ -15,17 +15,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.set('trust proxy', 1);
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow: no origin (service workers, curl), chrome-extension://, and CLIENT_URL
-    if (!origin || origin.startsWith('chrome-extension://') || origin === process.env.CLIENT_URL) {
-      callback(null, true);
-    } else {
-      callback(null, false);
-    }
-  },
-  credentials: true,
-}));
+app.use(cors({ origin: '*' }));
 
 // Stripe webhook needs raw body — must be before express.json()
 app.use('/billing/webhook', express.raw({ type: 'application/json' }));

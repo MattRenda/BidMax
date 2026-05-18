@@ -62,7 +62,7 @@ async function upsertUser(googleId, email) {
         .insert({ google_id: googleId, email })
         .select()
         .single();
-      if (error) throw new Error('Failed to create user: ' + error.message);
+      if (error) throw new Error('Failed to create user: ' + JSON.stringify(error));
       user = created;
     }
   }
