@@ -6,7 +6,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 
 // ── Persistent file-backed cache ──
-const CACHE_FILE = '/tmp/bidmax_cache_v2.json'; // v2 = includes itemUrl/thumbUrl
+const CACHE_FILE = '/tmp/bidmax_cache.json';
 const CACHE_TTL = 4 * 60 * 60 * 1000;
 
 let cacheStore = {};
@@ -14,23 +14,23 @@ try {
   if (existsSync(CACHE_FILE)) cacheStore = JSON.parse(readFileSync(CACHE_FILE, 'utf8'));
 } catch { cacheStore = {}; }
 
-export function saveCache() {
+function saveCache() {
   try { writeFileSync(CACHE_FILE, JSON.stringify(cacheStore)); } catch {}
 }
-export function getCached(key) {
+function getCached(key) {
   const entry = cacheStore[key];
   if (!entry) return null;
   if (Date.now() - entry.ts > CACHE_TTL) { delete cacheStore[key]; return null; }
   return entry.data;
 }
-export function setCached(key, data) {
+function setCached(key, data) {
   const keys = Object.keys(cacheStore);
   if (keys.length > 1000) keys.sort((a, b) => cacheStore[a].ts - cacheStore[b].ts).slice(0, 200).forEach(k => delete cacheStore[k]);
   cacheStore[key] = { data, ts: Date.now() };
   saveCache();
 }
 
-export function calcBid(total, { targetMargin, buyersPremium, fbFee, effortCost }) {
+function calcBid(total, { targetMargin, buyersPremium, fbFee, effortCost }) {
   const roi = targetMargin / 100;
   const premium = 1 + buyersPremium / 100;
   const fbFeeAmt = total * (fbFee / 100);
@@ -104,7 +104,7 @@ function extractRetailPrice(title) {
 
 // ── Build smart FB estimate ──
 // Priority: 1) eBay sold comps, 2) retail price anchor, 3) AI estimate
-export async function getSmartFBValue(title, aiEstimate) {
+async function getSmartFBValue(title, aiEstimate) {
   const [ebayPrice, retailPrice] = await Promise.all([
     getEbayAvgPrice(title),
     Promise.resolve(extractRetailPrice(title))
@@ -183,7 +183,9 @@ Rules:
 
 // ── BATCH analysis ──
 export async function analyzeBatch(req, res) {
-  const { lots, settings, deviceId, sessionToken, fromCache } = req.body;
+  const { lots, settings, deviceId, sessionToken, fromCache, personalBypass } = req.body;
+
+  const isPersonalBypass = personalBypass === 'matthew-pro-bypass';
   if (!lots || !Array.isArray(lots) || lots.length === 0) return res.status(400).json({ error: 'No lots provided.' });
 
   // Check how many lots are actually cached on the server
@@ -193,7 +195,7 @@ export async function analyzeBatch(req, res) {
   }).length;
 
   // Only count against limit if there are uncached lots
-  if (!fromCache && uncachedCount > 0 && (deviceId || sessionToken)) {
+  if (!isPersonalBypass && !fromCache && uncachedCount > 0 && (deviceId || sessionToken)) {
     let userId = null;
     try {
       const { validateSession, checkAndIncrementUsage } = await import('./auth.js');

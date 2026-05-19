@@ -7,7 +7,6 @@ import { dirname, join } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
-import { fetchAndAnalyze } from './routes/fetchAndAnalyze.js';
 
 dotenv.config();
 
@@ -16,7 +15,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.set('trust proxy', 1);
-app.use(cors({ origin: process.env.CLIENT_URL || '*' }));
+app.use(cors({ origin: '*' }));
 
 // Stripe webhook needs raw body — must be before express.json()
 app.use('/billing/webhook', express.raw({ type: 'application/json' }));
@@ -42,7 +41,6 @@ app.use('/auth/', rateLimit({ windowMs: 60 * 1000, max: 20 }));
 // Core analyze routes — always available
 app.post('/api/analyze', analyzeLot);
 app.post('/api/analyze-batch', analyzeBatch);
-app.post('/api/fetch-and-analyze', fetchAndAnalyze); // NEW: fetches BidRL items + analyzes in one shot
 app.post('/api/comps', getEbayComps);
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
