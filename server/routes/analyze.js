@@ -101,14 +101,21 @@ async function getSmartFBValue(title, aiEstimate) {
   let fbValue = aiEstimate;
   let source = 'ai';
   if (ebayPrice) {
-    fbValue = Math.round(ebayPrice * 0.85);
+    // eBay sold comps are most reliable — FB is ~75% of eBay (local market discount)
+    fbValue = Math.round(ebayPrice * 0.75);
     source = 'ebay';
   } else if (retailPrice) {
     const isSealed = /factory\s*sealed|new\s*in\s*box|nib|sealed/i.test(title);
-    fbValue = Math.round(retailPrice * (isSealed ? 0.65 : 0.50));
+    const isLargeOutdoor = /grill|traeger|weber|mower|lawn|patio|outdoor|bbq/i.test(title);
+    const isLargeFurniture = /sofa|couch|sectional|dresser|armoire|wardrobe/i.test(title);
+    let pct = isSealed ? 0.55 : 0.35;
+    if (isLargeOutdoor) pct = isSealed ? 0.40 : 0.25;
+    if (isLargeFurniture) pct = isSealed ? 0.40 : 0.25;
+    fbValue = Math.round(retailPrice * pct);
     source = 'retail';
   }
-  fbValue = Math.max(fbValue, aiEstimate);
+  // AI estimate is the floor only if eBay/retail anchor isn't available
+  if (source === 'ai') fbValue = aiEstimate;
   return { fbValue, source, ebayPrice, retailPrice };
 }
 
@@ -126,16 +133,23 @@ export async function analyzeLot(req, res) {
       max_tokens: 600,
       messages: [{
         role: 'user',
-        content: `You are an expert reseller. Analyze this auction lot and return ONLY valid JSON, no markdown.
+        content: `You are an expert reseller. Estimate the price this item would need to be listed at on Facebook Marketplace in a mid-size California city to SELL WITHIN 1-2 WEEKS to a stranger. Not what it's worth — the price that actually moves it fast.
+
 Lot: "${description}"
-Return:
+
+Return ONLY valid JSON, no markdown:
 {"lotTitle":"short title","items":[{"name":"item","condition":"new|like new|good|fair|poor","estimatedValue":25}],"totalEstimatedValue":100,"lotNotes":"key insight"}
-Rules:
-- estimatedValue = realistic LOCAL Facebook Marketplace price
-- Factory sealed / new in box = 60-70% of retail
-- Used items = 30-50% of retail
-- If retail price is in the title, anchor to it
-- Be realistic, not overly conservative`
+
+Pricing rules (price to sell, not to maximize):
+- Price 10-15% below typical FB Marketplace asking price so it sells in 1-2 weeks
+- Factory sealed / new in box = 50-55% of retail
+- Used/unknown condition = 25-35% of retail
+- Large outdoor items (grills, Traeger, Weber, mowers, patio) = 20-28% of retail — heavy, fewer buyers
+- Large furniture = 20-28% of retail
+- Power tools = 35-48% of retail
+- Small kitchen appliances = 28-40% of retail
+- Electronics sealed = 42-55% of retail
+- Condition unknown = assume used, use lower end of range`
       }],
     });
     const text = message.content[0].text.replace(/```json|```/g, '').trim();
@@ -204,7 +218,6 @@ export async function analyzeBatch(req, res) {
 
   if (toAnalyze.length === 0) return res.json({ results });
 
-  // Use actual lot IDs in the prompt so Claude echoes them back correctly
   const lotsText = toAnalyze.map(lot =>
     `${lot.lotId}: ${lot.title}${lot.currentBid ? ` | Current bid: $${lot.currentBid}` : ''}${lot.minBid ? ` | Min bid: $${lot.minBid}` : ''}`
   ).join('\n');
@@ -215,16 +228,26 @@ export async function analyzeBatch(req, res) {
       max_tokens: Math.min(120 * toAnalyze.length + 200, 4096),
       messages: [{
         role: 'user',
-        content: `Expert reseller. Estimate realistic LOCAL Facebook Marketplace resale value for each lot. Return ONLY a JSON array, no markdown.
+        content: `You are an expert reseller. Estimate the price each item would need to be listed at on Facebook Marketplace in a mid-size California city to SELL WITHIN 1-2 WEEKS to a stranger. This is not what it's worth — it's the price that actually moves it fast.
+
 ${lotsText}
-Rules:
-- Factory sealed / new in box = 60-70% of retail price
-- If retail price is mentioned in title, anchor to it strongly
-- Used condition = 30-50% of retail
-- Be realistic not conservative — local FB buyers pay fair prices for good items
+
+Pricing rules (price to sell, not to maximize):
+- Search your knowledge for what these items actually sell for used locally — not retail, not eBay, not wishful asking prices
+- Price 10-15% below typical FB Marketplace asking price so it sells quickly
+- Factory sealed / new in box = 50-55% of retail
+- Used/unknown condition = 25-35% of retail
+- Large outdoor items (grills, Traeger, Weber, mowers, patio furniture) = 20-28% of retail — heavy, hard to move, fewer buyers
+- Large furniture (sofas, dressers, wardrobes) = 20-28% of retail
+- Power tools (DeWalt, Milwaukee, Makita, Ryobi) = 35-48% of retail
+- Small kitchen appliances = 28-40% of retail
+- Electronics sealed = 42-55% of retail
+- Condition unknown = always assume used, use lower end of range
+- If current bid is already high relative to your estimate, note it
 - Use the EXACT lot ID from the input as the lotId field
-JSON array, one object per lot, same order:
-[{"lotId":"EXACT_ID_FROM_INPUT","lotTitle":"short title","totalEstimatedValue":85,"lotNotes":"brief insight"}]`
+
+Return ONLY a JSON array, no markdown, one object per lot, same order:
+[{"lotId":"EXACT_ID_FROM_INPUT","lotTitle":"short title","totalEstimatedValue":85,"lotNotes":"brief reasoning: condition assumed, comparable FB sales"}]`
       }],
     });
 
@@ -244,11 +267,11 @@ JSON array, one object per lot, same order:
       const aiEstimate = data.totalEstimatedValue || 0;
       const { fbValue, source, ebayPrice, retailPrice } = await getSmartFBValue(lot.title || '', aiEstimate);
       return {
-        lotId: lot.lotId,   // always use OUR lot ID, never Claude's
+        lotId: lot.lotId,
         key: lot._key,
         result: {
           ...data,
-          lotId: lot.lotId, // overwrite any LOT_X Claude may have returned
+          lotId: lot.lotId,
           totalEstimatedValue: fbValue,
           valueSource: source,
           ...(ebayPrice && { ebayAvgPrice: ebayPrice }),
@@ -261,7 +284,7 @@ JSON array, one object per lot, same order:
 
     for (const { lotId, key, result } of enhanced) {
       setCached(key, result);
-      results[lotId] = result; // keyed by our lot ID (RB2300 etc)
+      results[lotId] = result;
     }
 
     return res.json({ results });
