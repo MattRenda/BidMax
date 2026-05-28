@@ -1,8 +1,8 @@
 import fetch from 'node-fetch';
 import crypto from 'crypto';
 
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID_APP;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET_APP;
 const SERVER_URL = process.env.SERVER_URL || 'https://bidmax-development.up.railway.app';
 const CALLBACK_URL = `${SERVER_URL}/auth/google-mobile/callback`;
 const STATE_SECRET = process.env.SESSION_SECRET || 'bidmax-state-secret';
