@@ -8,6 +8,7 @@ import { existsSync, readdirSync } from 'fs';
 import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
 import { getAffiliates, getItems } from './routes/bidrl.js';
+import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
 
 dotenv.config();
 
@@ -43,6 +44,11 @@ app.use('/auth/', rateLimit({ windowMs: 60 * 1000, max: 20 }));
 // App proxy
 app.get('/bidrl/affiliates', getAffiliates);
 app.get('/bidrl/items', getItems);
+
+
+app.get('/auth/google-mobile/start', mobileAuthStart);
+app.get('/auth/google-mobile/callback', mobileAuthCallback);
+
 // Core analyze routes — always available
 app.post('/api/analyze', analyzeLot);
 app.post('/api/analyze-batch', analyzeBatch);
