@@ -7,12 +7,16 @@ import { dirname, join } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
+import { getAffiliates, getItems } from './routes/bidrl.js';
 
 dotenv.config();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
+// App proxy
+app.get('/bidrl/affiliates', getAffiliates);
+app.get('/bidrl/items', getItems);
 
 app.set('trust proxy', 1);
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
