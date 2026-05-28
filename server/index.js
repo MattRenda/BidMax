@@ -14,9 +14,7 @@ dotenv.config();
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
-// App proxy
-app.get('/bidrl/affiliates', getAffiliates);
-app.get('/bidrl/items', getItems);
+
 
 app.set('trust proxy', 1);
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
@@ -42,7 +40,9 @@ app.use(express.static(join(__dirname, 'public')));
 const limiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true });
 app.use('/api/', limiter);
 app.use('/auth/', rateLimit({ windowMs: 60 * 1000, max: 20 }));
-
+// App proxy
+app.get('/bidrl/affiliates', getAffiliates);
+app.get('/bidrl/items', getItems);
 // Core analyze routes — always available
 app.post('/api/analyze', analyzeLot);
 app.post('/api/analyze-batch', analyzeBatch);
