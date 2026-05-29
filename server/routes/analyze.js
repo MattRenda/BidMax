@@ -240,6 +240,9 @@ Pricing rules (price to sell, not to maximize):
 
 // ── BATCH analysis ──
 export async function analyzeBatch(req, res) {
+  // At the very top of analyzeBatch, right after the function signature:
+console.log('[BidMax] analyzeBatch called, version: web-search-2');
+  
   const { lots, settings, deviceId, sessionToken, fromCache, personalBypass } = req.body;
   const isPersonalBypass = personalBypass === 'matthew-pro-bypass';
   if (!lots || !Array.isArray(lots) || lots.length === 0) return res.status(400).json({ error: 'No lots provided.' });
