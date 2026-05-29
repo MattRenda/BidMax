@@ -16,7 +16,7 @@ async function searchRealRetailPrice(title) {
 
     // Step 1: search with web tool
     const step1 = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
       messages: [{ role: 'user', content: `What does "${cleanTitle}" sell for new on Amazon or Walmart right now?` }],
@@ -27,7 +27,7 @@ async function searchRealRetailPrice(title) {
     // Step 2: send tool results back, ask for JSON price
     const toolUseBlock = step1.content.find(b => b.type === 'tool_use');
     const step2 = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 200,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
       messages: [
@@ -303,9 +303,11 @@ export async function analyzeBatch(req, res) {
 
   if (toAnalyze.length === 0) return res.json({ results });
 
-  const lotsText = toAnalyze.map(lot =>
-    `${lot.lotId}: ${lot.title}${lot.currentBid ? ` | Current bid: $${lot.currentBid}` : ''}${lot.minBid ? ` | Min bid: $${lot.minBid}` : ''}`
-  ).join('\n');
+  // Strip claimed retail prices from titles before sending to Claude — they're often fake
+  const lotsText = toAnalyze.map(lot => {
+    const cleanTitle = lot.title.replace(/[-–—]?\s*retail\s*\$?[\d,]+(\.\d+)?/gi, '').trim();
+    return `${lot.lotId}: ${cleanTitle}${lot.currentBid ? ` | Current bid: $${lot.currentBid}` : ''}${lot.minBid ? ` | Min bid: $${lot.minBid}` : ''}`;
+  }).join('\n');
 
   try {
     const message = await anthropic.messages.create({
