@@ -5,10 +5,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 
 // ── Web search for real retail prices ──
 async function searchRealRetailPrice(title) {
-    console.log('[BidMax] searchRealRetailPrice called for:', title.slice(0, 50));
-
   try {
-    // Clean title for search — remove BidRL junk
     const cleanTitle = title
       .replace(/retail\s*\$[\d,]+/gi, '')
       .replace(/lot\s*#?\w+/gi, '')
@@ -17,27 +14,42 @@ async function searchRealRetailPrice(title) {
       .trim()
       .slice(0, 80);
 
-    const message = await anthropic.messages.create({
+    // Step 1: search with web tool
+    const step1 = await anthropic.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 1024,
+      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      messages: [{ role: 'user', content: `What does "${cleanTitle}" sell for new on Amazon or Walmart right now?` }],
+    });
+
+    if (step1.stop_reason !== 'tool_use') return null;
+
+    // Step 2: send tool results back, ask for JSON price
+    const toolUseBlock = step1.content.find(b => b.type === 'tool_use');
+    const step2 = await anthropic.messages.create({
       model: 'claude-haiku-4-5',
       max_tokens: 200,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-      messages: [{
-        role: 'user',
-        content: `What is the actual current retail price of this item on Amazon or Walmart? Search and return ONLY a JSON object with no markdown: {"retailPrice": 89, "source": "walmart.com", "confidence": "high|medium|low"}. If you cannot find a reliable price, return {"retailPrice": null}. Item: "${cleanTitle}"`,
-      }],
+      messages: [
+        { role: 'user', content: `What does "${cleanTitle}" sell for new on Amazon or Walmart right now?` },
+        { role: 'assistant', content: step1.content },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseBlock.id, content: 'Search done' }] },
+        { role: 'user', content: 'Based on your search results, what is the actual retail price? Reply with ONLY a number like: 89.99' },
+      ],
     });
 
-    // Find text response
-    const text = message.content.find(b => b.type === 'text')?.text || '';
-    const clean = text.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
-    if (parsed.retailPrice && parsed.confidence !== 'low') {
-      console.log(`[BidMax] Web search retail for "${cleanTitle.slice(0,40)}": $${parsed.retailPrice} (${parsed.source})`);
-      return parsed.retailPrice;
+    const text = step2.content.find(b => b.type === 'text')?.text || '';
+    const match = text.match(/[\$]?([\d,]+(?:\.\d{1,2})?)/);
+    if (match) {
+      const price = parseFloat(match[1].replace(',', ''));
+      if (price > 5 && price < 10000) {
+        console.log(`[BidMax] Web search: "${cleanTitle.slice(0,40)}" = $${price}`);
+        return price;
+      }
     }
     return null;
-   } catch(e) {
-    console.error('[BidMax] Web search error:', e.message, e?.error?.type || '');
+  } catch(e) {
+    console.error('[BidMax] Web search error:', e.message);
     return null;
   }
 }
@@ -243,9 +255,6 @@ Pricing rules (price to sell, not to maximize):
 
 // ── BATCH analysis ──
 export async function analyzeBatch(req, res) {
-  // At the very top of analyzeBatch, right after the function signature:
-console.log('[BidMax] analyzeBatch called, version: web-search-2');
-  
   const { lots, settings, deviceId, sessionToken, fromCache, personalBypass } = req.body;
   const isPersonalBypass = personalBypass === 'matthew-pro-bypass';
   if (!lots || !Array.isArray(lots) || lots.length === 0) return res.status(400).json({ error: 'No lots provided.' });
