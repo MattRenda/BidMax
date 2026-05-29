@@ -14,34 +14,27 @@ async function searchRealRetailPrice(title) {
       .trim()
       .slice(0, 80);
 
-    // Server-side web search — runs in one turn, results in final text block
     const step1 = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
+      max_tokens: 512,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-      messages: [{ role: 'user', content: `Search for the current price of "${cleanTitle}" on Amazon or Walmart. Reply with just the price as a number, nothing else. Example: 89.99` }],
+      messages: [{ role: 'user', content: `Search Amazon and Walmart for the typical retail price of this type of product: "${cleanTitle}". What is the typical price range? Reply with just the prices like "$X - $Y" or "$X".` }],
     });
 
-    // Extract from final text block (server tool runs automatically)
     const texts = step1.content.filter(b => b.type === 'text').map(b => b.text);
     const fullText = texts.join(' ');
-    console.log('[BidMax] Web search text:', fullText.slice(0, 200));
+    console.log('[BidMax] Web search text:', fullText.slice(0, 300));
 
-    // Look for price patterns with dollar sign context — avoid matching product specs like "2500G"
-    const pricePatterns = [
-      /(?:price[s]?|cost[s]?|sell[s]? for|listed? (?:at|for)|available for|only|just)[^\d]*\$([\d,]+(?:\.\d{1,2})?)/i,
-      /\$([\d,]+(?:\.\d{1,2})?)(?:\s*(?:at|on|from)\s*(?:amazon|walmart|walmart\.com|amazon\.com))?/i,
-    ];
+    // Extract all dollar amounts, use median
+    const allPrices = [...fullText.matchAll(/\$([0-9,]+(?:\.[0-9]{1,2})?)/g)]
+      .map(m => parseFloat(m[1].replace(',', '')))
+      .filter(p => p > 10 && p < 5000);
 
-    for (const pattern of pricePatterns) {
-      const match = fullText.match(pattern);
-      if (match) {
-        const price = parseFloat(match[1].replace(',', ''));
-        if (price > 5 && price < 5000) {
-          console.log(`[BidMax] Web search: "${cleanTitle.slice(0,40)}" = $${price}`);
-          return price;
-        }
-      }
+    if (allPrices.length > 0) {
+      allPrices.sort((a, b) => a - b);
+      const price = allPrices[Math.floor(allPrices.length / 2)];
+      console.log(`[BidMax] Web search prices: ${allPrices.join(', ')} → using $${price}`);
+      return price;
     }
     return null;
   } catch(e) {
