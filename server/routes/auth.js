@@ -30,7 +30,7 @@ async function verifyGoogleToken(token) {
 }
 
 // ── Get or create user from Google ──
-async function upsertUser(googleId, email) {
+export async function upsertUser(googleId, email) {
   // Check if user exists by google_id
   let { data: user } = await supabase
     .from('users')
@@ -71,7 +71,7 @@ async function upsertUser(googleId, email) {
 }
 
 // ── Create session ──
-async function createSession(userId) {
+export async function createSession(userId) {
   const { data: session, error } = await supabase
     .from('sessions')
     .insert({ user_id: userId })
