@@ -14,33 +14,18 @@ async function searchRealRetailPrice(title) {
       .trim()
       .slice(0, 80);
 
-    // Step 1: search with web tool
+    // Server-side web search — runs in one turn, results in final text block
     const step1 = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-      messages: [{ role: 'user', content: `What does "${cleanTitle}" sell for new on Amazon or Walmart right now?` }],
-    });
-    
-    console.log('[BidMax] step1 stop_reason:', step1.stop_reason, 'content types:', step1.content.map(b => b.type));
-    if (step1.stop_reason !== 'tool_use') return null;
-    
-    // Step 2: send tool results back, ask for JSON price
-    const toolUseBlock = step1.content.find(b => b.type === 'tool_use');
-    const step2 = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 200,
-      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-      messages: [
-        { role: 'user', content: `What does "${cleanTitle}" sell for new on Amazon or Walmart right now?` },
-        { role: 'assistant', content: step1.content },
-        { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseBlock.id, content: 'Search done' }] },
-        { role: 'user', content: 'Based on your search results, what is the actual retail price? Reply with ONLY a number like: 89.99' },
-      ],
+      messages: [{ role: 'user', content: `Search for the current price of "${cleanTitle}" on Amazon or Walmart. Reply with just the price as a number, nothing else. Example: 89.99` }],
     });
 
-    const text = step2.content.find(b => b.type === 'text')?.text || '';
-    const match = text.match(/[\$]?([\d,]+(?:\.\d{1,2})?)/);
+    // Extract from final text block (server tool runs automatically)
+    const texts = step1.content.filter(b => b.type === 'text').map(b => b.text);
+    const fullText = texts.join(' ');
+    const match = fullText.match(/\$?([\d,]+(?:\.\d{1,2})?)/);
     if (match) {
       const price = parseFloat(match[1].replace(',', ''));
       if (price > 5 && price < 10000) {
