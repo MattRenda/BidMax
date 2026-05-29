@@ -93,15 +93,43 @@ function extractRetailPrice(title) {
 }
 
 // ── Build smart FB estimate ──
+// Max plausible retail prices by category — catches inflated BidRL claims
+const RETAIL_CAPS = [
+  { pattern: /mop|broom|vacuum.*stick|spray mop/i, cap: 150 },
+  { pattern: /cleaning|cleaner|detergent|soap/i, cap: 80 },
+  { pattern: /extension spring|spring.*cable|garage.*spring/i, cap: 200 },
+  { pattern: /door.*hinge|hinge|bracket|hardware/i, cap: 100 },
+  { pattern: /nail.*desk|manicure.*table/i, cap: 300 },
+  { pattern: /shoe|sneaker|boot/i, cap: 250 },
+  { pattern: /wallpaper|contact.*paper/i, cap: 60 },
+  { pattern: /file.*cabinet/i, cap: 200 },
+];
+
+function sanityCheckRetail(title, claimedRetail) {
+  for (const { pattern, cap } of RETAIL_CAPS) {
+    if (pattern.test(title) && claimedRetail > cap) {
+      console.log(`[BidMax] Retail cap: "${title.slice(0,50)}" claimed $${claimedRetail}, capped at $${cap}`);
+      return cap;
+    }
+  }
+  return claimedRetail;
+}
+
 async function getSmartFBValue(title, aiEstimate) {
-  const [ebayPrice, retailPrice] = await Promise.all([
+  const [ebayPrice, rawRetailPrice] = await Promise.all([
     getEbayAvgPrice(title),
     Promise.resolve(extractRetailPrice(title))
   ]);
+
+  // Sanity check claimed retail — BidRL listings often inflate prices
+  const retailPrice = rawRetailPrice ? sanityCheckRetail(title, rawRetailPrice) : null;
+
   let fbValue = aiEstimate;
   let source = 'ai';
+
   if (ebayPrice) {
     // eBay sold comps are most reliable — FB is ~75% of eBay (local market discount)
+    // Never let AI estimate inflate above eBay-derived value
     fbValue = Math.round(ebayPrice * 0.75);
     source = 'ebay';
   } else if (retailPrice) {
@@ -111,12 +139,18 @@ async function getSmartFBValue(title, aiEstimate) {
     let pct = isSealed ? 0.55 : 0.35;
     if (isLargeOutdoor) pct = isSealed ? 0.40 : 0.25;
     if (isLargeFurniture) pct = isSealed ? 0.40 : 0.25;
-    fbValue = Math.round(retailPrice * pct);
+    const retailDerived = Math.round(retailPrice * pct);
+    // Only use retail anchor if it's LOWER than AI estimate (conservative) or AI has no data
+    // This prevents inflated retail claims from bumping up the value
+    fbValue = aiEstimate > 0 ? Math.min(retailDerived, aiEstimate * 1.5) : retailDerived;
     source = 'retail';
   }
-  // AI estimate is the floor only if eBay/retail anchor isn't available
+
+  // AI is only the floor when no external data exists
+  // When eBay/retail data exists, DON'T let AI inflate it
   if (source === 'ai') fbValue = aiEstimate;
-  return { fbValue, source, ebayPrice, retailPrice };
+
+  return { fbValue, source, ebayPrice, retailPrice: rawRetailPrice };
 }
 
 // ── Single lot analysis ──
