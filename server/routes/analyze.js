@@ -25,12 +25,22 @@ async function searchRealRetailPrice(title) {
     // Extract from final text block (server tool runs automatically)
     const texts = step1.content.filter(b => b.type === 'text').map(b => b.text);
     const fullText = texts.join(' ');
-    const match = fullText.match(/\$?([\d,]+(?:\.\d{1,2})?)/);
-    if (match) {
-      const price = parseFloat(match[1].replace(',', ''));
-      if (price > 5 && price < 10000) {
-        console.log(`[BidMax] Web search: "${cleanTitle.slice(0,40)}" = $${price}`);
-        return price;
+    console.log('[BidMax] Web search text:', fullText.slice(0, 200));
+
+    // Look for price patterns with dollar sign context — avoid matching product specs like "2500G"
+    const pricePatterns = [
+      /(?:price[s]?|cost[s]?|sell[s]? for|listed? (?:at|for)|available for|only|just)[^\d]*\$([\d,]+(?:\.\d{1,2})?)/i,
+      /\$([\d,]+(?:\.\d{1,2})?)(?:\s*(?:at|on|from)\s*(?:amazon|walmart|walmart\.com|amazon\.com))?/i,
+    ];
+
+    for (const pattern of pricePatterns) {
+      const match = fullText.match(pattern);
+      if (match) {
+        const price = parseFloat(match[1].replace(',', ''));
+        if (price > 5 && price < 5000) {
+          console.log(`[BidMax] Web search: "${cleanTitle.slice(0,40)}" = $${price}`);
+          return price;
+        }
       }
     }
     return null;
