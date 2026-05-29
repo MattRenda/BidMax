@@ -3,6 +3,42 @@ import fetch from 'node-fetch';
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 
+// ── Web search for real retail prices ──
+async function searchRealRetailPrice(title) {
+  try {
+    // Clean title for search — remove BidRL junk
+    const cleanTitle = title
+      .replace(/retail\s*\$[\d,]+/gi, '')
+      .replace(/lot\s*#?\w+/gi, '')
+      .replace(/factory\s*sealed/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80);
+
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 200,
+      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      messages: [{
+        role: 'user',
+        content: `What is the actual current retail price of this item on Amazon or Walmart? Search and return ONLY a JSON object with no markdown: {"retailPrice": 89, "source": "walmart.com", "confidence": "high|medium|low"}. If you cannot find a reliable price, return {"retailPrice": null}. Item: "${cleanTitle}"`,
+      }],
+    });
+
+    // Find text response
+    const text = message.content.find(b => b.type === 'text')?.text || '';
+    const clean = text.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+    if (parsed.retailPrice && parsed.confidence !== 'low') {
+      console.log(`[BidMax] Web search retail for "${cleanTitle.slice(0,40)}": $${parsed.retailPrice} (${parsed.source})`);
+      return parsed.retailPrice;
+    }
+    return null;
+  } catch(e) {
+    return null;
+  }
+}
+
 // ── Persistent file-backed cache ──
 const CACHE_FILE = '/tmp/bidmax_cache.json';
 const CACHE_TTL = 4 * 60 * 60 * 1000;
@@ -299,7 +335,35 @@ Return ONLY a JSON array, no markdown, one object per lot, same order:
     const enhanced = await Promise.all(toAnalyze.map(async (lot, i) => {
       const data = parsed[i] || {};
       const aiEstimate = data.totalEstimatedValue || 0;
-      const { fbValue, source, ebayPrice, retailPrice } = await getSmartFBValue(lot.title || '', aiEstimate);
+
+      // Search for real retail price — overrides claimed retail in title
+      const webRetailPrice = await searchRealRetailPrice(lot.title || '');
+
+      // If we found a real price via web search, use it as the anchor
+      let fbValue = aiEstimate;
+      let source = 'ai';
+      let retailPrice = null;
+
+      if (webRetailPrice) {
+        retailPrice = webRetailPrice;
+        const isSealed = /factory\s*sealed|new\s*in\s*box|nib|sealed/i.test(lot.title);
+        const isLargeOutdoor = /grill|traeger|weber|mower|lawn|patio|outdoor|bbq/i.test(lot.title);
+        const isLargeFurniture = /sofa|couch|sectional|dresser|armoire|wardrobe/i.test(lot.title);
+        let pct = isSealed ? 0.55 : 0.35;
+        if (isLargeOutdoor) pct = isSealed ? 0.40 : 0.25;
+        if (isLargeFurniture) pct = isSealed ? 0.40 : 0.25;
+        const retailDerived = Math.round(webRetailPrice * pct);
+        // Take the lower of AI estimate and retail-derived to be conservative
+        fbValue = aiEstimate > 0 ? Math.min(retailDerived, aiEstimate * 1.2) : retailDerived;
+        source = 'web_search';
+      } else {
+        // Fall back to eBay comps + claimed retail
+        const smartVal = await getSmartFBValue(lot.title || '', aiEstimate);
+        fbValue = smartVal.fbValue;
+        source = smartVal.source;
+        retailPrice = smartVal.retailPrice;
+      }
+
       return {
         lotId: lot.lotId,
         key: lot._key,
@@ -308,7 +372,6 @@ Return ONLY a JSON array, no markdown, one object per lot, same order:
           lotId: lot.lotId,
           totalEstimatedValue: fbValue,
           valueSource: source,
-          ...(ebayPrice && { ebayAvgPrice: ebayPrice }),
           ...(retailPrice && { retailPrice }),
           items: data.items || [],
           breakdown: calcBid(fbValue, s),
