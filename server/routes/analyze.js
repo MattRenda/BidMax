@@ -229,7 +229,10 @@ Return ONLY a JSON array, no markdown, one object per lot, same order:
 
     for (const [i, lot] of toAnalyze.entries()) {
       const data = parsed[i] || {};
-      const fbValue = data.totalEstimatedValue || 0;
+      let fbValue = data.totalEstimatedValue;
+      // Strip dollar sign if Claude returned "$380" instead of 380
+      if (typeof fbValue === 'string') fbValue = parseFloat(fbValue.replace(/[$,]/g, '')) || 0;
+      fbValue = fbValue || 0;
       const result = {
         ...data,
         lotId: lot.lotId,
