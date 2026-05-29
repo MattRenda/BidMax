@@ -83,16 +83,13 @@ export async function mobileAuthCallback(req, res) {
 
     if (!googleUser.email) throw new Error('No email in token');
 
-    // Mint BidMax session using existing auth logic
-    const { findOrCreateUser, createSession } = await import('./auth.js');
-    const user = await findOrCreateUser({
-      googleId: googleUser.sub,
-      email: googleUser.email,
-      name: googleUser.name,
-    });
-    const sessionToken = await createSession(user.id);
+        // Mint BidMax session using existing auth logic
+    const { upsertUser, createSession } = await import('./auth.js');
+    const user = await upsertUser(googleUser.sub, googleUser.email);
+    const session = await createSession(user.id);
+    const sessionToken = session.token;
 
-    return res.redirect(`${stateData.returnUrl}?sessionToken=${encodeURIComponent(sessionToken)}&email=${encodeURIComponent(user.email)}&isPro=${user.isPro}`);
+    return res.redirect(`${stateData.returnUrl}?sessionToken=${encodeURIComponent(sessionToken)}&email=${encodeURIComponent(user.email)}&isPro=${user.is_pro}`);
   } catch (err) {
     console.error('Mobile auth callback error:', err.message);
     return res.redirect(`bidmax://auth-callback?error=${encodeURIComponent(err.message)}`);
