@@ -14,18 +14,18 @@ async function searchRealRetailPrice(title) {
       .trim()
       .slice(0, 80);
 
+    // Use web search to find price from non-JS-rendered sources (Google Shopping snippets)
     const step1 = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 512,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-      messages: [{ role: 'user', content: `Search Amazon and Walmart for the typical retail price of this type of product: "${cleanTitle}". What is the typical price range? Reply with just the prices like "$X - $Y" or "$X".` }],
+      messages: [{ role: 'user', content: `Search Google Shopping for: ${cleanTitle} price. Find the actual retail price from search result snippets.` }],
     });
 
     const texts = step1.content.filter(b => b.type === 'text').map(b => b.text);
     const fullText = texts.join(' ');
     console.log('[BidMax] Web search text:', fullText.slice(0, 300));
 
-    // Extract all dollar amounts, use median
     const allPrices = [...fullText.matchAll(/\$([0-9,]+(?:\.[0-9]{1,2})?)/g)]
       .map(m => parseFloat(m[1].replace(',', '')))
       .filter(p => p > 10 && p < 5000);
