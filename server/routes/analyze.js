@@ -21,9 +21,10 @@ async function searchRealRetailPrice(title) {
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
       messages: [{ role: 'user', content: `What does "${cleanTitle}" sell for new on Amazon or Walmart right now?` }],
     });
-
+    
+    console.log('[BidMax] step1 stop_reason:', step1.stop_reason, 'content types:', step1.content.map(b => b.type));
     if (step1.stop_reason !== 'tool_use') return null;
-
+    
     // Step 2: send tool results back, ask for JSON price
     const toolUseBlock = step1.content.find(b => b.type === 'tool_use');
     const step2 = await anthropic.messages.create({
