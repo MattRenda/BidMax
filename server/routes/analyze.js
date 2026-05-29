@@ -5,6 +5,8 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 
 // ── Web search for real retail prices ──
 async function searchRealRetailPrice(title) {
+    console.log('[BidMax] searchRealRetailPrice called for:', title.slice(0, 50));
+
   try {
     // Clean title for search — remove BidRL junk
     const cleanTitle = title
@@ -34,7 +36,8 @@ async function searchRealRetailPrice(title) {
       return parsed.retailPrice;
     }
     return null;
-  } catch(e) {
+   } catch(e) {
+    console.error('[BidMax] Web search error:', e.message, e?.error?.type || '');
     return null;
   }
 }
