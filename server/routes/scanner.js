@@ -246,17 +246,17 @@ async function scanAffiliate(affiliateId) {
 
     console.log(`[Scan] ${newItems.length} new items to analyze, ${existingItems.length} existing (bid refresh only)`);
 
-    // Refresh bids for existing items — no Claude needed
+    // Update bids for existing items — only update bid columns, don't insert
     if (existingItems.length > 0) {
-      const bidUpdates = existingItems.map(item => ({
-        lot_number: item.lot_number,
-        affiliate_id: String(affiliateId),
-        current_bid: parseFloat(item.current_bid) || 0,
-        ends_at: parseInt(item.ends) || null,
-      }));
-      for (let i = 0; i < bidUpdates.length; i += 100) {
-        await supabase.from('analyzed_lots')
-          .upsert(bidUpdates.slice(i, i + 100), { onConflict: 'lot_number,affiliate_id' });
+      for (const item of existingItems) {
+        await supabase
+          .from('analyzed_lots')
+          .update({
+            current_bid: parseFloat(item.current_bid) || 0,
+            ends_at: parseInt(item.ends) || null,
+          })
+          .eq('lot_number', item.lot_number)
+          .eq('affiliate_id', String(affiliateId));
       }
       console.log(`[Scan] Updated bids for ${existingItems.length} existing items`);
     }
@@ -331,24 +331,19 @@ export async function refreshBidsForAffiliate(affiliateId) {
   try {
     const allItems = await fetchAllItems(affiliateId);
 
-    // Update current_bid and ends_at for existing DB records only
-    const updates = allItems.map(item => ({
-      lot_number: item.lot_number,
-      affiliate_id: String(affiliateId),
-      current_bid: parseFloat(item.current_bid) || 0,
-      ends_at: parseInt(item.ends) || null,
-    }));
-
-    // Upsert in chunks of 100
-    for (let i = 0; i < updates.length; i += 100) {
-      const chunk = updates.slice(i, i + 100);
-      const { error } = await supabase
+    // Update bid for each item individually — no insert
+    for (const item of allItems) {
+      await supabase
         .from('analyzed_lots')
-        .upsert(chunk, { onConflict: 'lot_number,affiliate_id', ignoreDuplicates: false });
-      if (error) console.error('[Refresh] Upsert error:', error.message);
+        .update({
+          current_bid: parseFloat(item.current_bid) || 0,
+          ends_at: parseInt(item.ends) || null,
+        })
+        .eq('lot_number', item.lot_number)
+        .eq('affiliate_id', String(affiliateId));
     }
 
-    console.log(`[Refresh] Updated ${updates.length} bids for affiliate ${affiliateId}`);
+    console.log(`[Refresh] Updated ${allItems.length} bids for affiliate ${affiliateId}`);
   } catch(e) {
     console.error(`[Refresh] Error:`, e.message);
   }
