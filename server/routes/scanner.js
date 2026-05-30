@@ -250,6 +250,23 @@ export async function runFullScan(req, res) {
   }
 }
 
+// GET /api/lot/:lotNumber — get single lot analysis from DB
+export async function getLotAnalysis(req, res) {
+  const { lotNumber } = req.params;
+  try {
+    const { data, error } = await supabase
+      .from('analyzed_lots')
+      .select('*')
+      .eq('lot_number', lotNumber)
+      .single();
+
+    if (error || !data) return res.status(404).json({ error: 'Not found' });
+    res.json(data);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
 // Get top picks from DB for an affiliate
 export async function getTopPicks(req, res) {
   const { affiliateId } = req.query;
