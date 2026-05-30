@@ -100,7 +100,15 @@ If you cannot identify the item, use confidence "low" and estimate retailPrice f
 }
 
 // Step 2: web search retail price for high-confidence identifications
+// Cache web search results to avoid duplicate searches within a scan
+const searchCache = new Map();
+
 async function searchRetailPrice(brand, model) {
+  const key = `${brand} ${model}`.toLowerCase();
+  if (searchCache.has(key)) {
+    console.log(`[Scan] Cache hit: ${brand} ${model} = $${searchCache.get(key)}`);
+    return searchCache.get(key);
+  }
   try {
     const query = `${brand} ${model} price`;
     const step1 = await anthropic.messages.create({
@@ -130,6 +138,7 @@ async function searchRetailPrice(brand, model) {
       prices.sort((a, b) => a - b);
       const price = prices[Math.floor(prices.length / 2)];
       console.log(`[Scan] Web search: ${brand} ${model} = $${price}`);
+      searchCache.set(key, price);
       return price;
     }
     return null;
@@ -147,19 +156,27 @@ async function analyzeBatchWithVision(items) {
   // Step 1: identify items from images
   const identifications = await identifyItems(items, imageData);
 
-  // Step 2: web search retail price sequentially to avoid rate limits
-  const retailPrices = [];
-  for (const id of identifications) {
-    if (!id) { retailPrices.push(null); continue; }
-    if (id.confidence === 'high' && id.brand && id.model && id.retailPrice) {
+  // Step 2: web search retail prices with concurrency limit to avoid rate limits
+  const retailPrices = new Array(identifications.length).fill(null);
+  const CONCURRENCY = 3;
+
+  const searchTasks = identifications
+    .map((id, i) => ({ id, i }))
+    .filter(({ id }) => id?.confidence === 'high' && id?.brand && id?.model);
+
+  for (let i = 0; i < searchTasks.length; i += CONCURRENCY) {
+    const chunk = searchTasks.slice(i, i + CONCURRENCY);
+    await Promise.all(chunk.map(async ({ id, i: idx }) => {
       const searched = await searchRetailPrice(id.brand, id.model);
-      retailPrices.push(searched || id.retailPrice);
-      // Small delay to avoid rate limiting
-      await new Promise(r => setTimeout(r, 1500));
-    } else {
-      retailPrices.push(id?.retailPrice || null);
-    }
+      retailPrices[idx] = searched || id?.retailPrice || null;
+    }));
+    if (i + CONCURRENCY < searchTasks.length) await new Promise(r => setTimeout(r, 2000));
   }
+
+  // Fill in non-searched items with AI estimates
+  identifications.forEach((id, i) => {
+    if (retailPrices[i] === null) retailPrices[i] = id?.retailPrice || null;
+  });
 
   // Step 3: calculate FB resell value using verified retail prices
   const results = identifications.map((id, i) => {
