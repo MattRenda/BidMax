@@ -214,7 +214,15 @@ async function analyzeBatchWithVision(items) {
 async function scanAffiliate(affiliateId) {
   console.log(`[Scan] Starting affiliate ${affiliateId}`);
 
-  // Log scan start
+  // Clean up expired lots first
+  const now = Math.floor(Date.now() / 1000);
+  const { error: cleanupError } = await supabase
+    .from('analyzed_lots')
+    .delete()
+    .eq('affiliate_id', String(affiliateId))
+    .lt('ends_at', now);
+  if (!cleanupError) console.log(`[Scan] Cleaned up ended lots`);
+
   const { data: scanLog } = await supabase
     .from('scan_log')
     .insert({ affiliate_id: affiliateId, status: 'running' })
@@ -224,18 +232,47 @@ async function scanAffiliate(affiliateId) {
     const allItems = await fetchAllItems(affiliateId);
     console.log(`[Scan] Fetched ${allItems.length} unique items`);
 
-    // Process in batches of 24
+    // Get already-analyzed lot numbers from DB — analyze each lot only once
+    const { data: existing } = await supabase
+      .from('analyzed_lots')
+      .select('lot_number, current_bid, ends_at')
+      .eq('affiliate_id', String(affiliateId));
+
+    const existingMap = new Map((existing || []).map(r => [r.lot_number, r]));
+
+    // Split into new items (need full analysis) and existing (just update bid)
+    const newItems = allItems.filter(i => !existingMap.has(i.lot_number));
+    const existingItems = allItems.filter(i => existingMap.has(i.lot_number));
+
+    console.log(`[Scan] ${newItems.length} new items to analyze, ${existingItems.length} existing (bid refresh only)`);
+
+    // Refresh bids for existing items — no Claude needed
+    if (existingItems.length > 0) {
+      const bidUpdates = existingItems.map(item => ({
+        lot_number: item.lot_number,
+        affiliate_id: String(affiliateId),
+        current_bid: parseFloat(item.current_bid) || 0,
+        ends_at: parseInt(item.ends) || null,
+      }));
+      for (let i = 0; i < bidUpdates.length; i += 100) {
+        await supabase.from('analyzed_lots')
+          .upsert(bidUpdates.slice(i, i + 100), { onConflict: 'lot_number,affiliate_id' });
+      }
+      console.log(`[Scan] Updated bids for ${existingItems.length} existing items`);
+    }
+
+    // Full vision + web search analysis for new items only
     const BATCH_SIZE = 24;
     let totalAnalyzed = 0;
-    const upsertRows = [];
 
-    for (let i = 0; i < allItems.length; i += BATCH_SIZE) {
-      const batch = allItems.slice(i, i + BATCH_SIZE);
-      console.log(`[Scan] Analyzing batch ${Math.floor(i/BATCH_SIZE)+1}/${Math.ceil(allItems.length/BATCH_SIZE)}`);
+    for (let i = 0; i < newItems.length; i += BATCH_SIZE) {
+      const batch = newItems.slice(i, i + BATCH_SIZE);
+      console.log(`[Scan] Analyzing batch ${Math.floor(i/BATCH_SIZE)+1}/${Math.ceil(newItems.length/BATCH_SIZE)}`);
 
       try {
         const results = await analyzeBatchWithVision(batch);
 
+        const upsertRows = [];
         for (const [j, item] of batch.entries()) {
           const result = results[j] || {};
           let resellValue = result.totalEstimatedValue;
@@ -261,23 +298,18 @@ async function scanAffiliate(affiliateId) {
             totalAnalyzed++;
           }
         }
+
+        if (upsertRows.length > 0) {
+          await supabase.from('analyzed_lots')
+            .upsert(upsertRows, { onConflict: 'lot_number,affiliate_id' });
+        }
       } catch(e) {
         console.error(`[Scan] Batch error:`, e.message);
       }
 
-      // Small delay between batches
-      if (i + BATCH_SIZE < allItems.length) await new Promise(r => setTimeout(r, 1000));
+      if (i + BATCH_SIZE < newItems.length) await new Promise(r => setTimeout(r, 1000));
     }
 
-    // Upsert all results to Supabase
-    if (upsertRows.length > 0) {
-      const { error } = await supabase
-        .from('analyzed_lots')
-        .upsert(upsertRows, { onConflict: 'lot_number,affiliate_id' });
-      if (error) console.error('[Scan] Supabase upsert error:', error.message);
-    }
-
-    // Update scan log
     await supabase.from('scan_log').update({
       items_scanned: allItems.length,
       items_analyzed: totalAnalyzed,
@@ -285,12 +317,13 @@ async function scanAffiliate(affiliateId) {
       status: 'completed',
     }).eq('id', scanLog.id);
 
-    console.log(`[Scan] Affiliate ${affiliateId} done: ${totalAnalyzed}/${allItems.length} analyzed`);
+    console.log(`[Scan] Done: ${totalAnalyzed} new, ${existingItems.length} bid-refreshed`);
   } catch(e) {
-    console.error(`[Scan] Affiliate ${affiliateId} failed:`, e.message);
+    console.error(`[Scan] Failed:`, e.message);
     await supabase.from('scan_log').update({ status: 'failed' }).eq('id', scanLog.id);
   }
 }
+
 
 // Lightweight bid refresh — no AI, just update current bids in DB
 export async function refreshBidsForAffiliate(affiliateId) {
@@ -375,11 +408,12 @@ export async function getTopPicks(req, res) {
 
   try {
     // Get items analyzed in last 24 hours, sorted by resell value
+    const now = Math.floor(Date.now() / 1000);
     const { data, error } = await supabase
       .from('analyzed_lots')
       .select('*')
       .eq('affiliate_id', String(affiliateId))
-      .gte('analyzed_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+      .gt('ends_at', now) // only active lots
       .order('resell_value', { ascending: false })
       .limit(50);
 
