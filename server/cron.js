@@ -1,5 +1,5 @@
 import cron from 'node-cron';
-import { runScanForAffiliate, refreshBidsForAffiliate } from './scanner.js';
+import { runScanForAffiliate, refreshBidsForAffiliate } from './routes/scanner.js';
 
 const ROCKLIN_AFFILIATE_ID = '75';
 
