@@ -147,16 +147,19 @@ async function analyzeBatchWithVision(items) {
   // Step 1: identify items from images
   const identifications = await identifyItems(items, imageData);
 
-  // Step 2: web search retail price for high-confidence items with brand+model
-  const retailPrices = await Promise.all(identifications.map(async (id) => {
-    if (!id) return null;
+  // Step 2: web search retail price sequentially to avoid rate limits
+  const retailPrices = [];
+  for (const id of identifications) {
+    if (!id) { retailPrices.push(null); continue; }
     if (id.confidence === 'high' && id.brand && id.model && id.retailPrice) {
-      // Only search if AI retail estimate seems uncertain or high
       const searched = await searchRetailPrice(id.brand, id.model);
-      return searched || id.retailPrice;
+      retailPrices.push(searched || id.retailPrice);
+      // Small delay to avoid rate limiting
+      await new Promise(r => setTimeout(r, 1500));
+    } else {
+      retailPrices.push(id?.retailPrice || null);
     }
-    return id?.retailPrice || null;
-  }));
+  }
 
   // Step 3: calculate FB resell value using verified retail prices
   const results = identifications.map((id, i) => {
