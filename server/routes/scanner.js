@@ -55,32 +55,23 @@ async function fetchImageBase64(url) {
 }
 
 // Analyze a batch of items with vision
-async function analyzeBatchWithVision(items) {
-  const imageData = await Promise.all(
-    items.map(item => item.thumb_url ? fetchImageBase64(item.thumb_url) : Promise.resolve(null))
-  );
-
+// Step 1: identify items from images
+async function identifyItems(items, imageData) {
   const lotsText = items.map(item => {
     const cleanTitle = item.title.replace(/[-–—]?\s*retail\s*\$?[\d,]+(\.\d+)?/gi, '').trim();
-    return `${item.lot_number}: ${cleanTitle}${item.current_bid ? ` | Bid: $${item.current_bid}` : ''}`;
+    return `${item.lot_number}: ${cleanTitle}`;
   }).join('\n');
 
   const contentBlocks = [{
     type: 'text',
-    text: `You are an expert reseller. For each lot, use the image AND title to identify the item and estimate its Facebook Marketplace resale price to sell in 1-2 weeks locally in California.
-
-IMPORTANT: Ignore any retail prices in titles — they are often fabricated. Use your real knowledge of actual retail prices.
+    text: `Look at each image and identify the exact product — brand, model number, and approximate retail price. Be specific.
 
 ${lotsText}
 
-Discounts from ACTUAL retail:
-- New/sealed = 50-55%, Like new = 40-50%, Good = 30-40%, Fair/poor = 15-25%
-- Large outdoor (grills, mowers) = 20-28%, Large furniture = 20-28%
-- Power tools = 35-48%, Small appliances = 28-40%, Electronics sealed = 42-55%
-- Generic/no-name = lower end of range
-
 Return ONLY a JSON array, same order:
-[{"lotId":"ID","lotTitle":"short title","totalEstimatedValue":85,"condition":"good","lotNotes":"actual retail ~$X, FB at Y%"}]`
+[{"lotId":"ID","brand":"MERACH","model":"W50","retailPrice":290,"condition":"new/sealed","confidence":"high|medium|low"}]
+
+If you cannot identify the item, use confidence "low" and estimate retailPrice from category knowledge.`
   }];
 
   items.forEach((item, i) => {
@@ -93,20 +84,110 @@ Return ONLY a JSON array, same order:
 
   const message = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
-    max_tokens: Math.min(150 * items.length + 200, 4096),
+    max_tokens: Math.min(100 * items.length + 200, 4096),
     messages: [{ role: 'user', content: contentBlocks }],
   });
 
   let rawText = message.content[0].text.replace(/```json|```/g, '').trim();
-  try {
-    return JSON.parse(rawText);
-  } catch {
+  try { return JSON.parse(rawText); }
+  catch {
     const lastBrace = rawText.lastIndexOf('}');
     if (lastBrace > 0) {
       try { return JSON.parse(rawText.slice(0, lastBrace + 1) + ']'); } catch {}
     }
     return [];
   }
+}
+
+// Step 2: web search retail price for high-confidence identifications
+async function searchRetailPrice(brand, model) {
+  try {
+    const query = `${brand} ${model} price`;
+    const step1 = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 512,
+      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      messages: [{ role: 'user', content: `Search for the current retail price of the ${brand} ${model}. What does it sell for new on Amazon or Walmart?` }],
+    });
+
+    // Extract all $ amounts from search results and Claude's text
+    const allText = step1.content
+      .map(b => {
+        if (b.type === 'text') return b.text;
+        if (b.type === 'web_search_tool_result') {
+          if (typeof b.content === 'string') return b.content;
+          if (Array.isArray(b.content)) return b.content.map(c => c.text || '').join(' ');
+        }
+        return '';
+      })
+      .join(' ');
+
+    const prices = [...allText.matchAll(/\$([0-9,]+(?:\.[0-9]{1,2})?)/g)]
+      .map(m => parseFloat(m[1].replace(',', '')))
+      .filter(p => p > 20 && p < 5000);
+
+    if (prices.length > 0) {
+      prices.sort((a, b) => a - b);
+      const price = prices[Math.floor(prices.length / 2)];
+      console.log(`[Scan] Web search: ${brand} ${model} = $${price}`);
+      return price;
+    }
+    return null;
+  } catch(e) {
+    console.error('[Scan] Web search error:', e.message);
+    return null;
+  }
+}
+
+async function analyzeBatchWithVision(items) {
+  const imageData = await Promise.all(
+    items.map(item => item.thumb_url ? fetchImageBase64(item.thumb_url) : Promise.resolve(null))
+  );
+
+  // Step 1: identify items from images
+  const identifications = await identifyItems(items, imageData);
+
+  // Step 2: web search retail price for high-confidence items with brand+model
+  const retailPrices = await Promise.all(identifications.map(async (id) => {
+    if (!id) return null;
+    if (id.confidence === 'high' && id.brand && id.model && id.retailPrice) {
+      // Only search if AI retail estimate seems uncertain or high
+      const searched = await searchRetailPrice(id.brand, id.model);
+      return searched || id.retailPrice;
+    }
+    return id?.retailPrice || null;
+  }));
+
+  // Step 3: calculate FB resell value using verified retail prices
+  const results = identifications.map((id, i) => {
+    if (!id) return null;
+    const item = items[i];
+    const retail = retailPrices[i] || id.retailPrice || 0;
+    const condition = id.condition || 'unknown';
+
+    let pct = 0.30; // default used
+    if (condition.includes('sealed') || condition.includes('new')) pct = 0.52;
+    else if (condition.includes('like new')) pct = 0.45;
+    else if (condition.includes('good')) pct = 0.35;
+    else if (condition.includes('fair') || condition.includes('poor')) pct = 0.20;
+
+    // Category overrides
+    const title = item.title.toLowerCase();
+    if (/grill|traeger|weber|mower|patio/.test(title)) pct = Math.min(pct, 0.28);
+    if (/sofa|couch|sectional|dresser/.test(title)) pct = Math.min(pct, 0.28);
+
+    const resellValue = retail > 0 ? Math.round(retail * pct) : 0;
+
+    return {
+      lotId: item.lot_number,
+      lotTitle: `${id.brand || ''} ${id.model || ''}`.trim() || item.title.slice(0, 50),
+      totalEstimatedValue: resellValue,
+      condition,
+      lotNotes: `${id.brand || ''} ${id.model || ''} | retail ~$${retail} | ${Math.round(pct*100)}% FB = $${resellValue}`,
+    };
+  }).filter(Boolean);
+
+  return results;
 }
 
 // Main scan function for one affiliate
