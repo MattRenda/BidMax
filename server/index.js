@@ -7,19 +7,19 @@ import { dirname, join } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
-import { getAffiliates, getItems } from './routes/bidrl.js';
+import { getAffiliates, getItems, getLiveBid } from './routes/bidrl.js';
 import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
+import { runFullScan, getTopPicks, runScanForAffiliate } from './routes/scanner.js';
+import './cron.js';
 
 dotenv.config();
-
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-
 app.set('trust proxy', 1);
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
-app.options('*', cors()); // Handle preflight for all routes
+app.options('*', cors());
 
 // Stripe webhook needs raw body — must be before express.json()
 app.use('/billing/webhook', express.raw({ type: 'application/json' }));
@@ -33,7 +33,6 @@ app.get('/', (req, res) => {
     res.json({ error: 'index.html not found', files: existsSync(join(__dirname, 'public')) ? readdirSync(join(__dirname, 'public')) : 'no public dir' });
   }
 });
-
 app.get('/privacy-policy.html', (req, res) => res.sendFile(join(__dirname, 'public', 'privacy-policy.html')));
 app.get('/success.html', (req, res) => res.sendFile(join(__dirname, 'public', 'success.html')));
 app.use(express.static(join(__dirname, 'public')));
@@ -41,15 +40,22 @@ app.use(express.static(join(__dirname, 'public')));
 const limiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true });
 app.use('/api/', limiter);
 app.use('/auth/', rateLimit({ windowMs: 60 * 1000, max: 20 }));
-// App proxy
+
+// BidRL proxy
 app.get('/bidrl/affiliates', getAffiliates);
 app.get('/bidrl/items', getItems);
+app.get('/bidrl/bid/:lotNumber', getLiveBid);
 
-
+// Mobile auth
 app.get('/auth/google-mobile/start', mobileAuthStart);
 app.get('/auth/google-mobile/callback', mobileAuthCallback);
 
-// Core analyze routes — always available
+// Top picks + scanner
+app.get('/api/top-picks', getTopPicks);
+app.get('/api/scan', runFullScan);
+app.get('/api/scan/:affiliateId', (req, res) => { runScanForAffiliate(req.params.affiliateId); res.json({ ok: true }); });
+
+// Core analyze routes
 app.post('/api/analyze', analyzeLot);
 app.post('/api/analyze-batch', analyzeBatch);
 app.post('/api/comps', getEbayComps);
@@ -60,18 +66,15 @@ async function loadAuthRoutes() {
   try {
     const { googleAuth, getMe, logout } = await import('./routes/auth.js');
     const { createCheckout, createPortal, handleWebhook } = await import('./routes/billing.js');
-
     app.post('/auth/google', googleAuth);
     app.get('/auth/me', getMe);
     app.post('/auth/logout', logout);
     app.post('/billing/checkout', createCheckout);
     app.post('/billing/portal', createPortal);
     app.post('/billing/webhook', handleWebhook);
-
     console.log('Auth + billing routes loaded');
   } catch (err) {
     console.error('Failed to load auth/billing routes:', err.message);
-    // Return helpful errors instead of 404s
     const errHandler = (_, res) => res.status(503).json({ error: 'Auth service unavailable', detail: err.message });
     app.post('/auth/google', errHandler);
     app.get('/auth/me', errHandler);
