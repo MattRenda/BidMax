@@ -258,7 +258,7 @@ async function scanAffiliate(affiliateId) {
     }
 
     // Full vision + web search analysis for new items only
-    const BATCH_SIZE = 24;
+    const BATCH_SIZE = 10;
     let totalAnalyzed = 0;
 
     for (let i = 0; i < newItems.length; i += BATCH_SIZE) {
@@ -303,7 +303,7 @@ async function scanAffiliate(affiliateId) {
         console.error(`[Scan] Batch error:`, e.message);
       }
 
-      if (i + BATCH_SIZE < newItems.length) await new Promise(r => setTimeout(r, 1000));
+      if (i + BATCH_SIZE < newItems.length) await new Promise(r => setTimeout(r, 3000));
     }
 
     await supabase.from('scan_log').update({
