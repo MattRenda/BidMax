@@ -156,21 +156,17 @@ async function analyzeBatchWithVision(items) {
   // Step 1: identify items from images
   const identifications = await identifyItems(items, imageData);
 
-  // Step 2: web search retail prices with concurrency limit to avoid rate limits
+  // Step 2: web search retail prices sequentially to stay within rate limits
   const retailPrices = new Array(identifications.length).fill(null);
-  const CONCURRENCY = 3;
 
   const searchTasks = identifications
     .map((id, i) => ({ id, i }))
     .filter(({ id }) => id?.confidence === 'high' && id?.brand && id?.model);
 
-  for (let i = 0; i < searchTasks.length; i += CONCURRENCY) {
-    const chunk = searchTasks.slice(i, i + CONCURRENCY);
-    await Promise.all(chunk.map(async ({ id, i: idx }) => {
-      const searched = await searchRetailPrice(id.brand, id.model);
-      retailPrices[idx] = searched || id?.retailPrice || null;
-    }));
-    if (i + CONCURRENCY < searchTasks.length) await new Promise(r => setTimeout(r, 2000));
+  for (const { id, i: idx } of searchTasks) {
+    const searched = await searchRetailPrice(id.brand, id.model);
+    retailPrices[idx] = searched || id?.retailPrice || null;
+    await new Promise(r => setTimeout(r, 2000));
   }
 
   // Fill in non-searched items with AI estimates
@@ -262,7 +258,7 @@ async function scanAffiliate(affiliateId) {
     }
 
     // Full vision + web search analysis for new items only
-    const BATCH_SIZE = 24;
+    const BATCH_SIZE = 10;
     let totalAnalyzed = 0;
 
     for (let i = 0; i < newItems.length; i += BATCH_SIZE) {
@@ -307,7 +303,7 @@ async function scanAffiliate(affiliateId) {
         console.error(`[Scan] Batch error:`, e.message);
       }
 
-      if (i + BATCH_SIZE < newItems.length) await new Promise(r => setTimeout(r, 1000));
+      if (i + BATCH_SIZE < newItems.length) await new Promise(r => setTimeout(r, 3000));
     }
 
     await supabase.from('scan_log').update({
@@ -392,6 +388,43 @@ export async function getLotAnalysis(req, res) {
     if (error || !data) return res.status(404).json({ error: 'Not found' });
     res.json(data);
   } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
+// GET /api/items?affiliateId=75&page=1&limit=24 — paginated analyzed items
+export async function getItems(req, res) {
+  const { affiliateId, page = 1, limit = 24, sort = 'resell' } = req.query;
+  if (!affiliateId) return res.status(400).json({ error: 'affiliateId required' });
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(50, parseInt(limit));
+    const offset = (pageNum - 1) * limitNum;
+
+    const orderCol = sort === 'ending' ? 'ends_at' : 'resell_value';
+    const ascending = sort === 'ending';
+
+    const { data, error, count } = await supabase
+      .from('analyzed_lots')
+      .select('*', { count: 'exact' })
+      .eq('affiliate_id', String(affiliateId))
+      .gt('ends_at', now)
+      .order(orderCol, { ascending })
+      .range(offset, offset + limitNum - 1);
+
+    if (error) throw error;
+
+    res.json({
+      items: data || [],
+      page: pageNum,
+      limit: limitNum,
+      total: count || 0,
+      total_pages: Math.ceil((count || 0) / limitNum),
+    });
+  } catch(e) {
+    console.error('[Items] Error:', e.message);
     res.status(500).json({ error: e.message });
   }
 }
