@@ -249,6 +249,7 @@ async function scanAffiliate(affiliateId) {
           .from('analyzed_lots')
           .update({
             current_bid: parseFloat(item.current_bid) || 0,
+            minimum_bid: parseFloat(item.minimum_bid) || 0,
             ends_at: parseInt(item.ends) || null,
             item_id: item.id || null,
           })
@@ -396,7 +397,7 @@ export async function getLotAnalysis(req, res) {
 
 // GET /api/items?affiliateId=75&page=1&limit=24 — paginated analyzed items
 export async function getItems(req, res) {
-  const { affiliateId, page = 1, limit = 24, sort = 'resell' } = req.query;
+  const { affiliateId, page = 1, limit = 24, sort = 'ending' } = req.query;
   if (!affiliateId) return res.status(400).json({ error: 'affiliateId required' });
 
   try {
@@ -405,8 +406,8 @@ export async function getItems(req, res) {
     const limitNum = Math.min(50, parseInt(limit));
     const offset = (pageNum - 1) * limitNum;
 
-    const orderCol = sort === 'ending' ? 'ends_at' : 'resell_value';
-    const ascending = sort === 'ending';
+    const orderCol = sort === 'resell' ? 'resell_value' : 'ends_at';
+    const ascending = sort !== 'resell';
 
     const { data, error, count } = await supabase
       .from('analyzed_lots')
