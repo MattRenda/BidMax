@@ -51,48 +51,45 @@ export async function getLiveBid(req, res) {
     const { lotNumber } = req.params;
     if (!lotNumber) return res.status(400).json({ error: 'lotNumber required' });
 
-    // Look up the item in our DB to get auction_id and item_id
     const { createClient } = await import('@supabase/supabase-js');
     const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
-    
+
     const { data: dbItem } = await supabase
       .from('analyzed_lots')
-      .select('auction_id, item_url, current_bid, ends_at')
+      .select('item_id, auction_id, current_bid, ends_at')
       .eq('lot_number', lotNumber)
       .single();
 
-    if (!dbItem) return res.status(404).json({ error: 'Item not found' });
+    if (!dbItem) return res.status(404).json({ error: 'Item not found in DB' });
 
-    // Extract item ID from URL: /item/title-ITEMID/
-    const itemIdMatch = dbItem.item_url.match(/-(\d+)\/?$/);
-    if (!itemIdMatch) {
-      // Fall back to DB values
-      return res.json({
-        lotNumber,
-        currentBid: parseFloat(dbItem.current_bid) || 0,
-        minimumBid: 0,
-        bidCount: 0,
-        endsAt: dbItem.ends_at || 0,
+    // Use item_id to filter getitems — BidRL supports filters[item_id]
+    if (dbItem.item_id) {
+      const response = await fetch('https://www.bidrl.com/api/getitems', {
+        method: 'POST',
+        headers: BIDRL_HEADERS,
+        body: `filters%5Bitem_id%5D=${dbItem.item_id}`,
       });
+      const data = await response.json();
+      const item = (data.items || []).find(i => i.lot_number === lotNumber) || data.items?.[0];
+
+      if (item) {
+        return res.json({
+          lotNumber,
+          currentBid: parseFloat(item.current_bid) || 0,
+          minimumBid: parseFloat(item.minimum_bid) || 0,
+          bidCount: parseInt(item.bid_count) || 0,
+          endsAt: parseInt(item.ends) || dbItem.ends_at || 0,
+        });
+      }
     }
 
-    const itemId = itemIdMatch[1];
-    
-    // Fetch live item data from BidRL
-    const response = await fetch(`https://www.bidrl.com/api/getitem/${itemId}`, {
-      method: 'GET',
-      headers: BIDRL_HEADERS,
-    });
-    
-    if (!response.ok) throw new Error(`BidRL returned ${response.status}`);
-    const item = await response.json();
-
-    res.json({
+    // Fallback to DB values
+    return res.json({
       lotNumber,
-      currentBid: parseFloat(item.current_bid) || 0,
-      minimumBid: parseFloat(item.minimum_bid) || 0,
-      bidCount: parseInt(item.bid_count) || 0,
-      endsAt: parseInt(item.ends) || dbItem.ends_at || 0,
+      currentBid: parseFloat(dbItem.current_bid) || 0,
+      minimumBid: 0,
+      bidCount: 0,
+      endsAt: dbItem.ends_at || 0,
     });
   } catch (err) {
     console.error('Live bid proxy error:', err.message);

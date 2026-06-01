@@ -283,6 +283,7 @@ async function scanAffiliate(affiliateId) {
               title: item.title,
               image_url: item.thumb_url || null,
               item_url: item.item_url,
+              item_id: item.id || null,
               current_bid: parseFloat(item.current_bid) || 0,
               minimum_bid: parseFloat(item.minimum_bid) || 0,
               ends_at: parseInt(item.ends) || null,
