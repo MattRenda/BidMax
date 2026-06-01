@@ -7,9 +7,9 @@ import { dirname, join } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
-import { getAffiliates, getItems, getLiveBid } from './routes/bidrl.js';
+import { getAffiliates, getItems as getBidrlItems, getLiveBid } from './routes/bidrl.js';
 import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
-import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis } from './routes/scanner.js';
+import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems } from './routes/scanner.js';
 import './cron.js';
 
 dotenv.config();
@@ -41,22 +41,23 @@ const limiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true 
 app.use('/api/', limiter);
 app.use('/auth/', rateLimit({ windowMs: 60 * 1000, max: 20 }));
 
-// BidRL proxy
+// BidRL proxy (raw BidRL API — used by extension)
 app.get('/bidrl/affiliates', getAffiliates);
-app.get('/bidrl/items', getItems);
+app.get('/bidrl/items', getBidrlItems);
 app.get('/bidrl/bid/:lotNumber', getLiveBid);
 
 // Mobile auth
 app.get('/auth/google-mobile/start', mobileAuthStart);
 app.get('/auth/google-mobile/callback', mobileAuthCallback);
 
-// Top picks + scanner
+// Scanner DB routes (pre-analyzed, app uses these)
 app.get('/api/top-picks', getTopPicks);
+app.get('/api/items', getItems);
 app.get('/api/lot/:lotNumber', getLotAnalysis);
 app.get('/api/scan', runFullScan);
 app.get('/api/scan/:affiliateId', (req, res) => { runScanForAffiliate(req.params.affiliateId); res.json({ ok: true }); });
 
-// Core analyze routes
+// Core analyze routes (on-demand AI analysis — extension list page badges)
 app.post('/api/analyze', analyzeLot);
 app.post('/api/analyze-batch', analyzeBatch);
 app.post('/api/comps', getEbayComps);
