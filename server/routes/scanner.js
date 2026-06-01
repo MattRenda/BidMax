@@ -250,6 +250,7 @@ async function scanAffiliate(affiliateId) {
           .update({
             current_bid: parseFloat(item.current_bid) || 0,
             ends_at: parseInt(item.ends) || null,
+            item_id: item.id || null,
           })
           .eq('lot_number', item.lot_number)
           .eq('affiliate_id', String(affiliateId));
