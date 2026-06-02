@@ -3,6 +3,20 @@ import fetch from 'node-fetch';
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 
+// ── Fetch image as base64 ──
+async function fetchImageBase64(url) {
+  try {
+    const res = await fetch(url, { timeout: 5000 });
+    if (!res.ok) return null;
+    const contentType = res.headers.get('content-type') || 'image/jpeg';
+    const buffer = await res.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString('base64');
+    return { base64, mediaType: contentType.split(';')[0] };
+  } catch {
+    return null;
+  }
+}
+
 // ── Persistent file-backed cache ──
 const CACHE_FILE = '/tmp/bidmax_cache.json';
 const CACHE_TTL = 4 * 60 * 60 * 1000;
@@ -36,87 +50,25 @@ function calcBid(total, { targetMargin, buyersPremium, fbFee, effortCost }) {
   const totalCost = Math.round(maxBid * premium + effortCost + fbFeeAmt);
   const expectedProfit = Math.round(total - totalCost);
   const actualRoi = totalCost > 0 ? Math.round((expectedProfit / totalCost) * 100) : 0;
+
+  // Apply aggressive safety margin — AI estimates are unreliable, protect the buyer
+  let safeBid = maxBid;
+  if (maxBid > 100) safeBid = Math.floor(maxBid * 0.75); // 25% haircut over $100
+  if (maxBid > 300) safeBid = Math.floor(maxBid * 0.65); // 35% haircut over $300
+  if (maxBid > 500) safeBid = Math.floor(maxBid * 0.55); // 45% haircut over $500
+
+  const safeTotalCost = Math.round(safeBid * premium + effortCost + fbFeeAmt);
+  const safeProfit = Math.round(total - safeTotalCost);
+
   return {
     estimatedSaleValue: total,
     fbFee: Math.round(fbFeeAmt),
     effortCost,
     buyersPremium: `${buyersPremium}%`,
-    maxBid,
-    expectedProfit,
-    roi: actualRoi,
+    maxBid: safeBid,
+    expectedProfit: safeProfit,
+    roi: safeTotalCost > 0 ? Math.round((safeProfit / safeTotalCost) * 100) : 0,
   };
-}
-
-// ── Fetch eBay sold comps ──
-async function getEbayAvgPrice(title) {
-  const appId = process.env.EBAY_APP_ID;
-  if (!appId || appId === 'your_ebay_app_id_here') return null;
-  try {
-    const cleanTitle = title
-      .replace(/lot\s*#?\w+/gi, '')
-      .replace(/msrp\s*\$[\d,]+/gi, '')
-      .replace(/retail\s*\$[\d,]+/gi, '')
-      .replace(/factory\s*sealed/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 80);
-    const query = encodeURIComponent(cleanTitle);
-    const url = `https://svcs.ebay.com/services/search/FindingService/v1` +
-      `?OPERATION-NAME=findCompletedItems` +
-      `&SERVICE-VERSION=1.0.0` +
-      `&SECURITY-APPNAME=${appId}` +
-      `&RESPONSE-DATA-FORMAT=JSON` +
-      `&keywords=${query}` +
-      `&itemFilter(0).name=SoldItemsOnly&itemFilter(0).value=true` +
-      `&itemFilter(1).name=Condition&itemFilter(1).value(0)=1000&itemFilter(1).value(1)=1500&itemFilter(1).value(2)=2000` +
-      `&sortOrder=EndTimeSoonest` +
-      `&paginationInput.entriesPerPage=8`;
-    const response = await fetch(url);
-    const data = await response.json();
-    const items = data?.findCompletedItemsResponse?.[0]?.searchResult?.[0]?.item || [];
-    const prices = items
-      .map(item => parseFloat(item.sellingStatus?.[0]?.currentPrice?.[0]?.__value__ || 0))
-      .filter(p => p > 5);
-    if (prices.length === 0) return null;
-    prices.sort((a, b) => a - b);
-    const mid = Math.floor(prices.length / 2);
-    return prices.length % 2 === 0 ? Math.round((prices[mid - 1] + prices[mid]) / 2) : prices[mid];
-  } catch {
-    return null;
-  }
-}
-
-// ── Extract retail price from title ──
-function extractRetailPrice(title) {
-  const match = title.match(/(?:msrp|retail|value)[:\s]*\$?([\d,]+)/i);
-  return match ? parseInt(match[1].replace(/,/g, '')) : null;
-}
-
-// ── Build smart FB estimate ──
-async function getSmartFBValue(title, aiEstimate) {
-  const [ebayPrice, retailPrice] = await Promise.all([
-    getEbayAvgPrice(title),
-    Promise.resolve(extractRetailPrice(title))
-  ]);
-  let fbValue = aiEstimate;
-  let source = 'ai';
-  if (ebayPrice) {
-    // eBay sold comps are most reliable — FB is ~75% of eBay (local market discount)
-    fbValue = Math.round(ebayPrice * 0.75);
-    source = 'ebay';
-  } else if (retailPrice) {
-    const isSealed = /factory\s*sealed|new\s*in\s*box|nib|sealed/i.test(title);
-    const isLargeOutdoor = /grill|traeger|weber|mower|lawn|patio|outdoor|bbq/i.test(title);
-    const isLargeFurniture = /sofa|couch|sectional|dresser|armoire|wardrobe/i.test(title);
-    let pct = isSealed ? 0.55 : 0.35;
-    if (isLargeOutdoor) pct = isSealed ? 0.40 : 0.25;
-    if (isLargeFurniture) pct = isSealed ? 0.40 : 0.25;
-    fbValue = Math.round(retailPrice * pct);
-    source = 'retail';
-  }
-  // AI estimate is the floor only if eBay/retail anchor isn't available
-  if (source === 'ai') fbValue = aiEstimate;
-  return { fbValue, source, ebayPrice, retailPrice };
 }
 
 // ── Single lot analysis ──
@@ -133,33 +85,29 @@ export async function analyzeLot(req, res) {
       max_tokens: 600,
       messages: [{
         role: 'user',
-        content: `You are an expert reseller. Estimate the price this item would need to be listed at on Facebook Marketplace in a mid-size California city to SELL WITHIN 1-2 WEEKS to a stranger. Not what it's worth — the price that actually moves it fast.
+        content: `You are an expert reseller who knows actual retail prices of products.
 
 Lot: "${description}"
 
-Return ONLY valid JSON, no markdown:
-{"lotTitle":"short title","items":[{"name":"item","condition":"new|like new|good|fair|poor","estimatedValue":25}],"totalEstimatedValue":100,"lotNotes":"key insight"}
+Step 1: Identify what this item actually is and what it actually retails for new (ignore any retail price claimed in the title — BidRL sellers often fabricate these).
+Step 2: Estimate the Facebook Marketplace resale price for a used/unknown condition item that needs to sell in 1-2 weeks locally.
 
-Pricing rules (price to sell, not to maximize):
-- Price 10-15% below typical FB Marketplace asking price so it sells in 1-2 weeks
-- Factory sealed / new in box = 50-55% of retail
-- Used/unknown condition = 25-35% of retail
-- Large outdoor items (grills, Traeger, Weber, mowers, patio) = 20-28% of retail — heavy, fewer buyers
-- Large furniture = 20-28% of retail
-- Power tools = 35-48% of retail
-- Small kitchen appliances = 28-40% of retail
-- Electronics sealed = 42-55% of retail
-- Condition unknown = assume used, use lower end of range`
+Apply these FB Marketplace discounts to ACTUAL retail (not claimed retail):
+- Used/unknown condition = 25-35% of actual retail
+- Large outdoor items (grills, mowers, patio) = 20-28% of actual retail
+- Large furniture = 20-28% of actual retail
+- Power tools = 35-48% of actual retail
+- Small appliances = 28-40% of actual retail
+- Electronics sealed = 42-55% of actual retail
+- Factory sealed = 50-55% of actual retail
+
+Return ONLY valid JSON, no markdown:
+{"lotTitle":"short title","totalEstimatedValue":85,"lotNotes":"actual retail ~$X, FB resell at Y% = $Z"}`
       }],
     });
     const text = message.content[0].text.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(text);
-    const { fbValue, source, ebayPrice, retailPrice } = await getSmartFBValue(description, parsed.totalEstimatedValue || 0);
-    parsed.totalEstimatedValue = fbValue;
-    parsed.valueSource = source;
-    if (ebayPrice) parsed.ebayAvgPrice = ebayPrice;
-    if (retailPrice) parsed.retailPrice = retailPrice;
-    const result = { ...parsed, breakdown: calcBid(fbValue, s) };
+    const result = { ...parsed, valueSource: 'ai', breakdown: calcBid(parsed.totalEstimatedValue || 0, s) };
     setCached(cacheKey, result);
     return res.json(result);
   } catch (err) {
@@ -218,37 +166,64 @@ export async function analyzeBatch(req, res) {
 
   if (toAnalyze.length === 0) return res.json({ results });
 
-  const lotsText = toAnalyze.map(lot =>
-    `${lot.lotId}: ${lot.title}${lot.currentBid ? ` | Current bid: $${lot.currentBid}` : ''}${lot.minBid ? ` | Min bid: $${lot.minBid}` : ''}`
-  ).join('\n');
+  // Strip claimed retail from titles — BidRL sellers frequently fabricate these
+  const lotsText = toAnalyze.map(lot => {
+    const cleanTitle = lot.title.replace(/[-–—]?\s*retail\s*\$?[\d,]+(\.\d+)?/gi, '').trim();
+    const imgPart = lot.imageUrl ? ` | Image: ${lot.imageUrl}` : '';
+    return `${lot.lotId}: ${cleanTitle}${lot.currentBid ? ` | Current bid: $${lot.currentBid}` : ''}${imgPart}`;
+  }).join('\n');
 
   try {
-    const message = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
-      max_tokens: Math.min(120 * toAnalyze.length + 200, 4096),
-      messages: [{
-        role: 'user',
-        content: `You are an expert reseller. Estimate the price each item would need to be listed at on Facebook Marketplace in a mid-size California city to SELL WITHIN 1-2 WEEKS to a stranger. This is not what it's worth — it's the price that actually moves it fast.
+    // Fetch images in parallel for vision analysis
+    const imageData = await Promise.all(
+      toAnalyze.map(lot => lot.imageUrl ? fetchImageBase64(lot.imageUrl) : Promise.resolve(null))
+    );
+
+    // Build vision content — text prompt + images for each lot
+    const promptText = `You are an expert reseller who knows actual retail prices of products.
+
+For each lot below, use the provided images AND titles to:
+1. Identify the exact item (brand, model if visible)
+2. Assess condition from the image (new, like new, good, fair, poor)
+3. Estimate the Facebook Marketplace resale price to SELL IN 1-2 WEEKS locally in California
+
+IMPORTANT: Use your real knowledge of actual retail prices — ignore any prices claimed in titles, they are frequently fabricated.
 
 ${lotsText}
 
-Pricing rules (price to sell, not to maximize):
-- Search your knowledge for what these items actually sell for used locally — not retail, not eBay, not wishful asking prices
-- Price 10-15% below typical FB Marketplace asking price so it sells quickly
-- Factory sealed / new in box = 50-55% of retail
-- Used/unknown condition = 25-35% of retail
-- Large outdoor items (grills, Traeger, Weber, mowers, patio furniture) = 20-28% of retail — heavy, hard to move, fewer buyers
-- Large furniture (sofas, dressers, wardrobes) = 20-28% of retail
-- Power tools (DeWalt, Milwaukee, Makita, Ryobi) = 35-48% of retail
-- Small kitchen appliances = 28-40% of retail
-- Electronics sealed = 42-55% of retail
-- Condition unknown = always assume used, use lower end of range
-- If current bid is already high relative to your estimate, note it
-- Use the EXACT lot ID from the input as the lotId field
+Apply these FB Marketplace discounts to ACTUAL retail price:
+- New/sealed = 50-55% of actual retail
+- Like new = 40-50% of actual retail
+- Good condition = 30-40% of actual retail
+- Fair/poor condition = 15-25% of actual retail
+- Large outdoor items (grills, mowers) = 20-28% of actual retail regardless of condition
+- Large furniture = 20-28% of actual retail
+- Power tools (DeWalt, Milwaukee, Makita, Ryobi) = 35-48% of actual retail
+- Generic/no-name items = use lower end of range
 
 Return ONLY a JSON array, no markdown, one object per lot, same order:
-[{"lotId":"EXACT_ID_FROM_INPUT","lotTitle":"short title","totalEstimatedValue":85,"lotNotes":"brief reasoning: condition assumed, comparable FB sales"}]`
-      }],
+[{"lotId":"EXACT_ID","lotTitle":"short title","totalEstimatedValue":85,"condition":"good","lotNotes":"identified as X, actual retail ~$Y, FB resell at Z%"}]`;
+
+    // Build content array with text + images interleaved
+    const contentBlocks = [{ type: 'text', text: promptText }];
+    toAnalyze.forEach((lot, i) => {
+      const img = imageData[i];
+      if (img) {
+        contentBlocks.push({
+          type: 'text',
+          text: `Image for ${lot.lotId}:`
+        });
+        contentBlocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: img.mediaType, data: img.base64 }
+        });
+      }
+    });
+
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: Math.min(150 * toAnalyze.length + 200, 4096),
+      messages: [{ role: 'user', content: contentBlocks }],
     });
 
     let rawText = message.content[0].text.replace(/```json|```/g, '').trim();
@@ -262,29 +237,22 @@ Return ONLY a JSON array, no markdown, one object per lot, same order:
       } else { parsed = []; }
     }
 
-    const enhanced = await Promise.all(toAnalyze.map(async (lot, i) => {
+    for (const [i, lot] of toAnalyze.entries()) {
       const data = parsed[i] || {};
-      const aiEstimate = data.totalEstimatedValue || 0;
-      const { fbValue, source, ebayPrice, retailPrice } = await getSmartFBValue(lot.title || '', aiEstimate);
-      return {
+      let fbValue = data.totalEstimatedValue;
+      // Strip dollar sign if Claude returned "$380" instead of 380
+      if (typeof fbValue === 'string') fbValue = parseFloat(fbValue.replace(/[$,]/g, '')) || 0;
+      fbValue = fbValue || 0;
+      const result = {
+        ...data,
         lotId: lot.lotId,
-        key: lot._key,
-        result: {
-          ...data,
-          lotId: lot.lotId,
-          totalEstimatedValue: fbValue,
-          valueSource: source,
-          ...(ebayPrice && { ebayAvgPrice: ebayPrice }),
-          ...(retailPrice && { retailPrice }),
-          items: data.items || [],
-          breakdown: calcBid(fbValue, s),
-        }
+        totalEstimatedValue: fbValue,
+        valueSource: 'ai',
+        items: data.items || [],
+        breakdown: calcBid(fbValue, s),
       };
-    }));
-
-    for (const { lotId, key, result } of enhanced) {
-      setCached(key, result);
-      results[lotId] = result;
+      setCached(lot._key, result);
+      results[lot.lotId] = result;
     }
 
     return res.json({ results });
