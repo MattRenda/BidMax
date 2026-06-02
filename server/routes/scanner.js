@@ -479,12 +479,30 @@ export async function getItems(req, res) {
 
     if (error) throw error;
 
+    // Check if user is Pro — strip resell_value and lot_notes for free users
+    let isPro = false;
+    try {
+      const token = req.headers.authorization?.replace('Bearer ', '') || req.query.sessionToken;
+      if (token) {
+        const { validateSession } = await import('./auth.js');
+        const user = await validateSession(token);
+        isPro = user?.isPro || false;
+      }
+    } catch(e) {}
+
+    const items = (data || []).map(item => ({
+      ...item,
+      resell_value: isPro ? item.resell_value : null,
+      lot_notes: isPro ? item.lot_notes : null,
+    }));
+
     res.json({
-      items: data || [],
+      items,
       page: pageNum,
       limit: limitNum,
       total: count || 0,
       total_pages: Math.ceil((count || 0) / limitNum),
+      isPro,
     });
   } catch(e) {
     console.error('[Items] Error:', e.message);
