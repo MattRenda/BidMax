@@ -9,7 +9,7 @@ import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
 import { getAffiliates, getItems as getBidrlItems, getLiveBid } from './routes/bidrl.js';
 import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
-import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems } from './routes/scanner.js';
+import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems, requestLocation, getLocationRequests } from './routes/scanner.js';
 import './cron.js';
 
 dotenv.config();
@@ -54,6 +54,8 @@ app.get('/auth/google-mobile/callback', mobileAuthCallback);
 app.get('/api/top-picks', getTopPicks);
 app.get('/api/items', getItems);
 app.get('/api/lot/:lotNumber', getLotAnalysis);
+app.post('/api/request-location', requestLocation);
+app.get('/api/location-requests', getLocationRequests);
 app.get('/api/scan', runFullScan);
 app.get('/api/scan/:affiliateId', (req, res) => { runScanForAffiliate(req.params.affiliateId); res.json({ ok: true }); });
 
