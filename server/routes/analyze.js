@@ -50,14 +50,24 @@ function calcBid(total, { targetMargin, buyersPremium, fbFee, effortCost }) {
   const totalCost = Math.round(maxBid * premium + effortCost + fbFeeAmt);
   const expectedProfit = Math.round(total - totalCost);
   const actualRoi = totalCost > 0 ? Math.round((expectedProfit / totalCost) * 100) : 0;
+
+  // Apply aggressive safety margin — AI estimates are unreliable, protect the buyer
+  let safeBid = maxBid;
+  if (maxBid > 100) safeBid = Math.floor(maxBid * 0.75); // 25% haircut over $100
+  if (maxBid > 300) safeBid = Math.floor(maxBid * 0.65); // 35% haircut over $300
+  if (maxBid > 500) safeBid = Math.floor(maxBid * 0.55); // 45% haircut over $500
+
+  const safeTotalCost = Math.round(safeBid * premium + effortCost + fbFeeAmt);
+  const safeProfit = Math.round(total - safeTotalCost);
+
   return {
     estimatedSaleValue: total,
     fbFee: Math.round(fbFeeAmt),
     effortCost,
     buyersPremium: `${buyersPremium}%`,
-    maxBid,
-    expectedProfit,
-    roi: actualRoi,
+    maxBid: safeBid,
+    expectedProfit: safeProfit,
+    roi: safeTotalCost > 0 ? Math.round((safeProfit / safeTotalCost) * 100) : 0,
   };
 }
 
