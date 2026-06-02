@@ -10,6 +10,7 @@ import { getEbayComps } from './routes/comps.js';
 import { getAffiliates, getItems as getBidrlItems, getLiveBid } from './routes/bidrl.js';
 import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
 import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems, requestLocation, getLocationRequests } from './routes/scanner.js';
+import { handleRevenueCatWebhook } from './routes/revenuecat-webhook.js';
 import { startPusherListener } from './routes/pusher-listener.js';
 import './cron.js';
 
@@ -41,6 +42,9 @@ app.use(express.static(join(__dirname, 'public')));
 const limiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true });
 app.use('/api/', limiter);
 app.use('/auth/', rateLimit({ windowMs: 60 * 1000, max: 20 }));
+
+// RevenueCat webhook — no auth middleware, uses its own secret check
+app.post('/webhooks/revenuecat', express.json(), handleRevenueCatWebhook);
 
 // BidRL proxy (raw BidRL API — used by extension)
 app.get('/bidrl/affiliates', getAffiliates);
