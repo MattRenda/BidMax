@@ -17,18 +17,25 @@ export async function getAffiliates(req, res) {
     });
     const data = await response.json();
 
-    // Get list of affiliate IDs that have analyzed items in the DB
+    // Get distinct affiliate IDs with active items in DB
     const { createClient } = await import('@supabase/supabase-js');
     const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-    const { data: supported } = await supabase
+    const { data: supported, error } = await supabase
       .from('analyzed_lots')
       .select('affiliate_id')
-      .gt('ends_at', Math.floor(Date.now() / 1000));
+      .gt('ends_at', Math.floor(Date.now() / 1000))
+      .limit(1000);
 
     const supportedIds = new Set((supported || []).map(r => String(r.affiliate_id)));
 
-    const enriched = data.map(aff => ({
+    // If DB query fails, return affiliates without supported flag rather than empty list
+    if (error) {
+      console.error('Affiliates supported check error:', error.message);
+      return res.json(data);
+    }
+
+    const enriched = (Array.isArray(data) ? data : []).map(aff => ({
       ...aff,
       supported: supportedIds.has(String(aff.value)),
     }));
