@@ -1,5 +1,6 @@
-import PusherClient from 'pusher-js/node.js';
-const Pusher = PusherClient.default || PusherClient;
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const { Pusher } = require('pusher-js/node');
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
