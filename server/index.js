@@ -10,6 +10,7 @@ import { getEbayComps } from './routes/comps.js';
 import { getAffiliates, getItems as getBidrlItems, getLiveBid } from './routes/bidrl.js';
 import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
 import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems, requestLocation, getLocationRequests } from './routes/scanner.js';
+import { startPusherListener } from './routes/pusher-listener.js';
 import './cron.js';
 
 dotenv.config();
@@ -89,4 +90,7 @@ async function loadAuthRoutes() {
 app.listen(PORT, async () => {
   console.log(`BidMax server running on port ${PORT}`);
   await loadAuthRoutes();
+  
+  // Start real-time bid listener
+  startPusherListener().catch(e => console.error('[Pusher] Failed to start:', e.message));
 });

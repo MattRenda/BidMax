@@ -1,5 +1,5 @@
 import cron from 'node-cron';
-import { runScanForAffiliate, refreshBidsForAffiliate } from './routes/scanner.js';
+import { runScanForAffiliate } from './routes/scanner.js';
 
 // ── Active affiliates — add new ones here as demand grows ──
 // Phase 1: Rocklin only
@@ -23,7 +23,8 @@ const AFFILIATES = [
   // { id: '71', name: 'Anderson, CA' },
 ];
 
-// Full scan with vision analysis 9am-5pm PT (new items added during business hours)
+// Full scan 9am-5pm PT hourly — analyzes new items with vision + web search
+// Bid updates are handled in real-time by Pusher (pusher-listener.js)
 cron.schedule('0 9-17 * * *', async () => {
   console.log(`[Cron] Full scan starting for ${AFFILIATES.length} location(s)`);
   for (const aff of AFFILIATES) {
@@ -32,14 +33,6 @@ cron.schedule('0 9-17 * * *', async () => {
   }
 }, { timezone: 'America/Los_Angeles' });
 
-// Lightweight bid refresh 6pm-10pm PT (no new items, just update bids)
-cron.schedule('0 18-22 * * *', async () => {
-  console.log(`[Cron] Bid refresh starting for ${AFFILIATES.length} location(s)`);
-  for (const aff of AFFILIATES) {
-    await refreshBidsForAffiliate(aff.id);
-  }
-}, { timezone: 'America/Los_Angeles' });
-
 console.log(`[Cron] Scheduler active for: ${AFFILIATES.map(a => a.name).join(', ')}`);
 console.log('[Cron] Full scan: 9am-5pm PT hourly');
-console.log('[Cron] Bid refresh: 6pm-10pm PT hourly');
+console.log('[Cron] Bid updates: real-time via Pusher');
