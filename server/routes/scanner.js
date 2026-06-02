@@ -486,7 +486,7 @@ export async function getItems(req, res) {
       if (token) {
         const { validateSession } = await import('./auth.js');
         const user = await validateSession(token);
-        isPro = user?.isPro || false;
+        isPro = user?.is_pro || false;
       }
     } catch(e) {}
 
