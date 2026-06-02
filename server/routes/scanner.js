@@ -192,7 +192,12 @@ async function analyzeBatchWithVision(items) {
     if (/grill|traeger|weber|mower|patio/.test(title)) pct = Math.min(pct, 0.28);
     if (/sofa|couch|sectional|dresser/.test(title)) pct = Math.min(pct, 0.28);
 
-    const resellValue = retail > 0 ? Math.round(retail * pct) : 0;
+    let resellValue = retail > 0 ? Math.round(retail * pct) : 0;
+
+    // Apply aggressive haircut — protect resellers from AI overestimates
+    if (resellValue > 100) resellValue = Math.floor(resellValue * 0.75);
+    if (resellValue > 300) resellValue = Math.floor(resellValue * 0.65);
+    if (resellValue > 500) resellValue = Math.floor(resellValue * 0.55);
 
     return {
       lotId: item.lot_number,
@@ -375,6 +380,51 @@ export async function runFullScan(req, res) {
     console.log('[Scan] Full scan complete');
   } catch(e) {
     console.error('[Scan] Full scan error:', e.message);
+  }
+}
+
+// POST /api/request-location — track user requests for new locations
+export async function requestLocation(req, res) {
+  const { affiliateId, affiliateName, userId } = req.body;
+  if (!affiliateId) return res.status(400).json({ error: 'affiliateId required' });
+
+  try {
+    await supabase.from('location_requests').insert({
+      affiliate_id: String(affiliateId),
+      affiliate_name: affiliateName || null,
+      user_id: userId || null,
+    });
+
+    // Count total requests for this location
+    const { count } = await supabase
+      .from('location_requests')
+      .select('*', { count: 'exact' })
+      .eq('affiliate_id', String(affiliateId));
+
+    res.json({ ok: true, totalRequests: count });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
+// GET /api/location-requests — admin view of demand by location
+export async function getLocationRequests(req, res) {
+  try {
+    const { data } = await supabase
+      .from('location_requests')
+      .select('affiliate_id, affiliate_name')
+      .order('requested_at', { ascending: false });
+
+    const counts = {};
+    (data || []).forEach(r => {
+      const key = r.affiliate_id;
+      if (!counts[key]) counts[key] = { affiliateId: key, name: r.affiliate_name, requests: 0 };
+      counts[key].requests++;
+    });
+
+    res.json({ locations: Object.values(counts).sort((a, b) => b.requests - a.requests) });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
   }
 }
 
