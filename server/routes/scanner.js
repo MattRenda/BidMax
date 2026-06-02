@@ -385,17 +385,27 @@ export async function runFullScan(req, res) {
 
 // POST /api/request-location — track user requests for new locations
 export async function requestLocation(req, res) {
-  const { affiliateId, affiliateName, userId } = req.body;
+  const { affiliateId, affiliateName, sessionToken } = req.body;
   if (!affiliateId) return res.status(400).json({ error: 'affiliateId required' });
 
   try {
+    // Resolve user from Bearer token or sessionToken in body
+    const token = req.headers.authorization?.replace('Bearer ', '') || sessionToken;
+    let userId = null;
+    if (token) {
+      try {
+        const { validateSession } = await import('./auth.js');
+        const user = await validateSession(token);
+        userId = user?.id ?? null;
+      } catch(e) {}
+    }
+
     await supabase.from('location_requests').insert({
       affiliate_id: String(affiliateId),
       affiliate_name: affiliateName || null,
-      user_id: userId || null,
+      user_id: userId,
     });
 
-    // Count total requests for this location
     const { count } = await supabase
       .from('location_requests')
       .select('*', { count: 'exact' })
