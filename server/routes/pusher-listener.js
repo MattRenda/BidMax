@@ -52,7 +52,7 @@ async function handleBidEvent(lotNumber, data) {
     const update = {
       current_bid: parseFloat(bidData.current_bid) || 0,
       minimum_bid: parseFloat(bidData.minimum_bid) || 0,
-      ends_at: parseInt(bidData.end_time) || undefined,
+      ends_at: bidData.end_time ? parseInt(bidData.end_time) + (2 * 3600) : undefined,
     };
 
     // Remove undefined fields
@@ -64,7 +64,7 @@ async function handleBidEvent(lotNumber, data) {
       .eq('lot_number', lotNumber);
 
     if (!error) {
-      console.log(`[Pusher] Bid update: ${lotNumber} → $${update.current_bid}`);
+      console.log(`[Pusher] Bid update: ${lotNumber} → $${update.current_bid} | ends_at: ${update.ends_at} (${update.ends_at ? new Date(update.ends_at * 1000).toISOString() : 'n/a'})`);
     }
   } catch(e) {
     console.error('[Pusher] handleBidEvent error:', e.message);
