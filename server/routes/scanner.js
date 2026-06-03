@@ -438,7 +438,59 @@ export async function getLocationRequests(req, res) {
   }
 }
 
-// GET /api/lot/:lotNumber — get single lot analysis from DB
+// GET /api/reveal/:lotNumber — usage-gated lot lookup for free users
+export async function revealLot(req, res) {
+  const { lotNumber } = req.params;
+  const { personalBypass } = req.query;
+  const isPersonalBypass = personalBypass === 'matthew-pro-bypass';
+
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '') || req.query.sessionToken;
+    const deviceId = req.headers['x-device-id'] || req.query.deviceId;
+
+    let userId = null;
+    let isPro = false;
+
+    if (token) {
+      const { validateSession } = await import('./auth.js');
+      const user = await validateSession(token);
+      if (user) {
+        userId = user.id;
+        isPro = user.is_pro || false;
+      }
+    }
+
+    // Check and increment usage for non-Pro users
+    if (!isPersonalBypass && !isPro) {
+      const { checkAndIncrementUsage } = await import('./auth.js');
+      const usage = await checkAndIncrementUsage(deviceId, userId);
+      if (!usage.allowed) {
+        return res.status(402).json({
+          error: 'Daily limit reached',
+          code: 'LIMIT_REACHED',
+          used: usage.used,
+          limit: usage.limit,
+        });
+      }
+      res.setHeader('X-Usage-Used', usage.used);
+      res.setHeader('X-Usage-Limit', usage.limit);
+    }
+
+    // Return lot data
+    const { data, error } = await supabase
+      .from('analyzed_lots')
+      .select('*')
+      .eq('lot_number', lotNumber)
+      .single();
+
+    if (error || !data) return res.status(404).json({ error: 'Not found' });
+    res.json(data);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+}
+
+// GET /api/lot/:lotNumber — get single lot analysis from DB (no usage gate)
 export async function getLotAnalysis(req, res) {
   const { lotNumber } = req.params;
   try {
@@ -541,5 +593,56 @@ export async function getTopPicks(req, res) {
   } catch(e) {
     console.error('[TopPicks] Error:', e.message);
     return res.status(500).json({ error: e.message });
+  }
+}
+
+// GET /api/reveal/:lotNumber — usage-gated lot lookup for free users
+export async function revealLot(req, res) {
+  const { lotNumber } = req.params;
+  const { personalBypass } = req.query;
+  const isPersonalBypass = personalBypass === 'matthew-pro-bypass';
+
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '') || req.query.sessionToken;
+    const deviceId = req.headers['x-device-id'] || req.query.deviceId;
+
+    let userId = null;
+    let isPro = false;
+
+    if (token) {
+      const { validateSession } = await import('./auth.js');
+      const user = await validateSession(token);
+      if (user) {
+        userId = user.id;
+        isPro = user.is_pro || false;
+      }
+    }
+
+    // Check and increment usage for non-Pro users
+    if (!isPersonalBypass && !isPro) {
+      const { checkAndIncrementUsage } = await import('./auth.js');
+      const usage = await checkAndIncrementUsage(deviceId, userId);
+      if (!usage.allowed) {
+        return res.status(402).json({
+          error: 'Daily limit reached',
+          code: 'LIMIT_REACHED',
+          used: usage.used,
+          limit: usage.limit,
+        });
+      }
+      res.setHeader('X-Usage-Used', usage.used);
+      res.setHeader('X-Usage-Limit', usage.limit);
+    }
+
+    const { data, error } = await supabase
+      .from('analyzed_lots')
+      .select('*')
+      .eq('lot_number', lotNumber)
+      .single();
+
+    if (error || !data) return res.status(404).json({ error: 'Not found' });
+    res.json(data);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
   }
 }
