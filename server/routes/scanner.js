@@ -255,7 +255,7 @@ async function scanAffiliate(affiliateId) {
           .update({
             current_bid: parseFloat(item.current_bid) || 0,
             minimum_bid: parseFloat(item.minimum_bid) || 0,
-            ends_at: parseInt(item.ends) || null,
+            ends_at: item.ends ? parseInt(item.ends) + 7200 : null,
             item_id: item.id || null,
           })
           .eq('lot_number', item.lot_number)
@@ -293,7 +293,7 @@ async function scanAffiliate(affiliateId) {
               item_id: item.id || null,
               current_bid: parseFloat(item.current_bid) || 0,
               minimum_bid: parseFloat(item.minimum_bid) || 0,
-              ends_at: parseInt(item.ends) || null,
+              ends_at: item.ends ? parseInt(item.ends) + 7200 : null,
               resell_value: Math.round(resellValue),
               condition: result.condition || 'unknown',
               lot_notes: result.lotNotes || null,
@@ -341,7 +341,7 @@ export async function refreshBidsForAffiliate(affiliateId) {
         .from('analyzed_lots')
         .update({
           current_bid: parseFloat(item.current_bid) || 0,
-          ends_at: parseInt(item.ends) || null,
+          ends_at: item.ends ? parseInt(item.ends) + 7200 : null,
         })
         .eq('lot_number', item.lot_number)
         .eq('affiliate_id', String(affiliateId));
