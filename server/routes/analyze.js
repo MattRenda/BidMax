@@ -122,12 +122,9 @@ export async function analyzeBatch(req, res) {
   const isPersonalBypass = personalBypass === 'matthew-pro-bypass';
   if (!lots || !Array.isArray(lots) || lots.length === 0) return res.status(400).json({ error: 'No lots provided.' });
 
-  const uncachedCount = lots.filter(lot => {
-    const key = lot.lotId || lot.title?.slice(0, 60);
-    return !getCached(key);
-  }).length;
-
-  if (!isPersonalBypass && !fromCache && uncachedCount > 0 && (deviceId || sessionToken)) {
+  // Always check and increment usage for non-Pro users on every batch call
+  // (regardless of server cache — reveal = usage, period)
+  if (!isPersonalBypass && !fromCache && (deviceId || sessionToken)) {
     let userId = null;
     try {
       const { validateSession, checkAndIncrementUsage } = await import('./auth.js');
