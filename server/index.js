@@ -39,14 +39,10 @@ app.get('/privacy-policy.html', (req, res) => res.sendFile(join(__dirname, 'publ
 app.get('/success.html', (req, res) => res.sendFile(join(__dirname, 'public', 'success.html')));
 app.use(express.static(join(__dirname, 'public')));
 
-const limiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true });
-app.use('/api/', limiter);
-app.use('/auth/', rateLimit({ windowMs: 60 * 1000, max: 20 }));
-
-// Higher limit for cheap DB reads — extension hits these for every visible card
-const dbReadLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true });
-app.use('/api/lot/', dbReadLimiter);
-app.use('/api/reveal/', dbReadLimiter);
+// Targeted rate limits — only on expensive endpoints
+const analyzeLimiter = rateLimit({ windowMs: 60 * 1000, max: 20, standardHeaders: true });
+const authLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, standardHeaders: true });
+const scanLimiter = rateLimit({ windowMs: 60 * 1000, max: 2, standardHeaders: true });
 
 // RevenueCat webhook — no auth middleware, uses its own secret check
 app.post('/webhooks/revenuecat', express.json(), handleRevenueCatWebhook);
@@ -67,13 +63,13 @@ app.get('/api/reveal/:lotNumber', revealLot);   // usage-gated reveal for free u
 app.get('/api/lot/:lotNumber', getLotAnalysis);  // no usage gate (Pro / internal)
 app.post('/api/request-location', requestLocation);
 app.get('/api/location-requests', getLocationRequests);
-app.get('/api/scan', runFullScan);
-app.get('/api/scan/:affiliateId', (req, res) => { runScanForAffiliate(req.params.affiliateId); res.json({ ok: true }); });
+app.get('/api/scan', scanLimiter, runFullScan);
+app.get('/api/scan/:affiliateId', scanLimiter, (req, res) => { runScanForAffiliate(req.params.affiliateId); res.json({ ok: true }); });
 
 // Core analyze routes (on-demand AI analysis — fallback for items not in DB)
-app.post('/api/analyze', analyzeLot);
-app.post('/api/analyze-batch', analyzeBatch);
-app.post('/api/comps', getEbayComps);
+app.post('/api/analyze', analyzeLimiter, analyzeLot);
+app.post('/api/analyze-batch', analyzeLimiter, analyzeBatch);
+app.post('/api/comps', analyzeLimiter, getEbayComps);
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
 // Auth + billing routes — load lazily so startup errors don't kill the server
@@ -81,7 +77,7 @@ async function loadAuthRoutes() {
   try {
     const { googleAuth, getMe, logout } = await import('./routes/auth.js');
     const { createCheckout, createPortal, handleWebhook } = await import('./routes/billing.js');
-    app.post('/auth/google', googleAuth);
+    app.post('/auth/google', authLimiter, googleAuth);
     app.get('/auth/me', getMe);
     app.post('/auth/logout', logout);
     app.post('/billing/checkout', createCheckout);
