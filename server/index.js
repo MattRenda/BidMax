@@ -9,7 +9,7 @@ import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
 import { getAffiliates, getItems as getBidrlItems, getLiveBid } from './routes/bidrl.js';
 import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
-import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems, requestLocation, getLocationRequests } from './routes/scanner.js';
+import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems, requestLocation, getLocationRequests, revealLot } from './routes/scanner.js';
 import { handleRevenueCatWebhook } from './routes/revenuecat-webhook.js';
 import { startPusherListener } from './routes/pusher-listener.js';
 import './cron.js';
@@ -20,7 +20,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.set('trust proxy', 1);
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id'], exposedHeaders: ['X-Usage-Used', 'X-Usage-Limit'] }));
 app.options('*', cors());
 
 // Stripe webhook needs raw body — must be before express.json()
@@ -43,6 +43,11 @@ const limiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true 
 app.use('/api/', limiter);
 app.use('/auth/', rateLimit({ windowMs: 60 * 1000, max: 20 }));
 
+// Higher limit for cheap DB reads — extension hits these for every visible card
+const dbReadLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true });
+app.use('/api/lot/', dbReadLimiter);
+app.use('/api/reveal/', dbReadLimiter);
+
 // RevenueCat webhook — no auth middleware, uses its own secret check
 app.post('/webhooks/revenuecat', express.json(), handleRevenueCatWebhook);
 
@@ -55,16 +60,17 @@ app.get('/bidrl/bid/:lotNumber', getLiveBid);
 app.get('/auth/google-mobile/start', mobileAuthStart);
 app.get('/auth/google-mobile/callback', mobileAuthCallback);
 
-// Scanner DB routes (pre-analyzed, app uses these)
+// Scanner DB routes (pre-analyzed, app + extension use these)
 app.get('/api/top-picks', getTopPicks);
 app.get('/api/items', getItems);
-app.get('/api/lot/:lotNumber', getLotAnalysis);
+app.get('/api/reveal/:lotNumber', revealLot);   // usage-gated reveal for free users
+app.get('/api/lot/:lotNumber', getLotAnalysis);  // no usage gate (Pro / internal)
 app.post('/api/request-location', requestLocation);
 app.get('/api/location-requests', getLocationRequests);
 app.get('/api/scan', runFullScan);
 app.get('/api/scan/:affiliateId', (req, res) => { runScanForAffiliate(req.params.affiliateId); res.json({ ok: true }); });
 
-// Core analyze routes (on-demand AI analysis — extension list page badges)
+// Core analyze routes (on-demand AI analysis — fallback for items not in DB)
 app.post('/api/analyze', analyzeLot);
 app.post('/api/analyze-batch', analyzeBatch);
 app.post('/api/comps', getEbayComps);
@@ -94,7 +100,7 @@ async function loadAuthRoutes() {
 app.listen(PORT, async () => {
   console.log(`BidMax server running on port ${PORT}`);
   await loadAuthRoutes();
-  
+
   // Start real-time bid listener
   startPusherListener().catch(e => console.error('[Pusher] Failed to start:', e.message));
 });
