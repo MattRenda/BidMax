@@ -447,10 +447,10 @@ export async function revealLot(req, res) {
   try {
     const token = req.headers.authorization?.replace('Bearer ', '') || req.query.sessionToken;
     const deviceId = req.headers['x-device-id'] || req.query.deviceId;
-    console.log('[Reveal] lotNumber:', lotNumber, 'deviceId:', deviceId, 'token:', !!token, 'isPro:', isPro);
 
     let userId = null;
     let isPro = false;
+    console.log('[Reveal] lotNumber:', lotNumber, 'deviceId:', deviceId, 'token:', !!token, 'isPro:', isPro);
 
     if (token) {
       const { validateSession } = await import('./auth.js');
