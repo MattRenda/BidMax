@@ -43,6 +43,11 @@ const limiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true 
 app.use('/api/', limiter);
 app.use('/auth/', rateLimit({ windowMs: 60 * 1000, max: 20 }));
 
+// Higher limit for cheap DB reads — extension hits these for every visible card
+const dbReadLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true });
+app.use('/api/lot/', dbReadLimiter);
+app.use('/api/reveal/', dbReadLimiter);
+
 // RevenueCat webhook — no auth middleware, uses its own secret check
 app.post('/webhooks/revenuecat', express.json(), handleRevenueCatWebhook);
 
