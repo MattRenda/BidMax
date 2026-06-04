@@ -23,9 +23,9 @@ const AFFILIATES = [
   // { id: '71', name: 'Anderson, CA' },
 ];
 
-// Full scan 9am-5pm PT hourly — analyzes new items with vision + web search
+// Full scan 7am-8pm PT hourly — catches new auction drops morning and evening
 // Bid updates are handled in real-time by Pusher (pusher-listener.js)
-cron.schedule('0 9-17 * * *', async () => {
+cron.schedule('0 7-20 * * *', async () => {
   console.log(`[Cron] Full scan starting for ${AFFILIATES.length} location(s)`);
   for (const aff of AFFILIATES) {
     console.log(`[Cron] Scanning ${aff.name} (${aff.id})`);
@@ -33,6 +33,14 @@ cron.schedule('0 9-17 * * *', async () => {
   }
 }, { timezone: 'America/Los_Angeles' });
 
+// Midnight scan — catches auctions that go live overnight
+cron.schedule('0 0 * * *', async () => {
+  console.log(`[Cron] Midnight scan starting for ${AFFILIATES.length} location(s)`);
+  for (const aff of AFFILIATES) {
+    await runScanForAffiliate(aff.id);
+  }
+}, { timezone: 'America/Los_Angeles' });
+
 console.log(`[Cron] Scheduler active for: ${AFFILIATES.map(a => a.name).join(', ')}`);
-console.log('[Cron] Full scan: 9am-5pm PT hourly');
+console.log('[Cron] Full scan: 7am-8pm PT hourly + midnight');
 console.log('[Cron] Bid updates: real-time via Pusher');
