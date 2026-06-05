@@ -174,7 +174,42 @@ export async function getMe(req, res) {
   }
 }
 
-// ── POST /auth/logout ──
+// ── DELETE /auth/me — permanently delete user account and all associated data ──
+export async function deleteAccount(req, res) {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    const deviceId = req.headers['x-device-id'] || req.query.deviceId;
+
+    let userId = null;
+
+    if (token) {
+      const user = await validateSession(token);
+      if (user) userId = user.id;
+    }
+
+    if (!userId && !deviceId) {
+      return res.status(400).json({ error: 'No session or device ID provided' });
+    }
+
+    // Delete all user data — order matters for FK constraints
+    if (userId) {
+      await supabase.from('sessions').delete().eq('user_id', userId);
+      await supabase.from('usage').delete().eq('user_id', userId);
+      await supabase.from('location_requests').delete().eq('user_id', userId);
+      await supabase.from('users').delete().eq('id', userId);
+    }
+
+    // Delete device usage rows regardless of auth
+    if (deviceId) {
+      await supabase.from('usage').delete().eq('device_id', deviceId);
+    }
+
+    return res.status(200).json({ ok: true });
+  } catch(e) {
+    console.error('[DeleteAccount] Error:', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+}
 export async function logout(req, res) {
   try {
     const token = req.headers.authorization?.replace('Bearer ', '');
