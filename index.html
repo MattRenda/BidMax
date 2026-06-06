@@ -489,8 +489,11 @@
       .btn-cta { width: 100%; justify-content: center; }
       footer { flex-direction: column; gap: 12px; text-align: center; padding: 24px 20px; }
       .footer-links { flex-wrap: wrap; justify-content: center; gap: 16px; }
-      /* Hero phones — hide entirely on mobile, gallery shows screenshots below */
-      .hero-right { display: none; }
+      /* Hero phones — single centered phone on mobile */
+      .hero-right { display: block; overflow: hidden; }
+      .phones-wrap { height: 300px; overflow: hidden; width: 100%; }
+      .phone-back-left, .phone-back-right { display: none; }
+      .phone-main { width: 138px; height: 298px; transform: none; position: relative; margin: 0 auto; }
       /* Gallery phones smaller on mobile */
       .gallery-phone { width: 150px; height: 325px; }
       /* Platform card screens smaller */
@@ -835,7 +838,7 @@
 
         <div class="faq-item reveal">
           <button class="faq-q" onclick="toggleFaq(this)">Is BidMax free? <span class="faq-icon">+</span></button>
-          <div class="faq-a"><p>Yes — BidMax has a free tier that gives you a set number of analyses per day with no account required on the Chrome extension. The Pro plan ($9.99/month) unlocks unlimited analyses across Chrome, Android, and iOS. You can start using BidMax for free today without a credit card.</p></div>
+          <div class="faq-a"><p>Yes — BidMax has a free tier across all platforms: the Chrome extension, Android app, and iOS app. Each gives you a set number of analyses per day to get started. The Pro plan ($9.99/month) unlocks unlimited analyses across all three. No credit card required to start.</p></div>
         </div>
 
         <div class="faq-item reveal">
@@ -908,7 +911,7 @@
         "name": "Is BidMax free?",
         "acceptedAnswer": {
           "@type": "Answer",
-          "text": "Yes — BidMax has a free tier with no account required on the Chrome extension. The Pro plan ($9.99/month) unlocks unlimited analyses across Chrome, Android, and iOS."
+          "text": "Yes — BidMax has a free tier across all platforms: Chrome, Android, and iOS. The Pro plan ($9.99/month) unlocks unlimited analyses across all three."
         }
       },
       {
