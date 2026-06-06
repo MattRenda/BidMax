@@ -39,6 +39,10 @@
 
     html { scroll-behavior: smooth; }
 
+    html, body {
+      max-width: 100%;
+      overflow-x: hidden;
+    }
     body {
       font-family: 'Inter', -apple-system, sans-serif;
       background: var(--cream);
@@ -456,33 +460,38 @@
     @media (max-width: 900px) {
       nav { padding: 0 20px; }
       .nav-right .nav-link { display: none; }
-      .hero { grid-template-columns: 1fr; gap: 48px; padding: 100px 20px 60px; }
+      .hero { grid-template-columns: 1fr; gap: 32px; padding: 90px 20px 48px; }
       .hero-sub { max-width: 100%; }
       .platform-ctas .platform-row { flex-wrap: wrap; }
       .btn-platform { width: 100%; justify-content: center; }
       .proof { padding: 24px 20px; }
       .proof-inner { flex-wrap: wrap; gap: 16px; }
-      .section { padding: 72px 20px; }
+      .section { padding: 56px 20px; }
       .steps { grid-template-columns: 1fr; }
-      .features-section { padding: 72px 20px; }
+      .features-section { padding: 56px 20px; }
       .features-layout { grid-template-columns: 1fr; gap: 40px; }
       .features-left { position: static; }
       .features-grid { grid-template-columns: 1fr; }
       .formula-inner { grid-template-columns: 1fr; gap: 40px; }
-      .formula-section { padding: 72px 20px; }
-      .platforms-section { padding: 72px 20px; }
+      .formula-section { padding: 56px 20px; }
+      .platforms-section { padding: 56px 20px; }
       .platform-cards { grid-template-columns: 1fr; }
       .platform-card-ctas { flex-wrap: wrap; }
       .btn-sm { flex: 1; justify-content: center; }
-      .gallery-section { padding: 72px 20px; }
-      .cta-section { padding: 80px 20px; }
-      .cta-buttons { flex-direction: column; align-items: center; }
+      .gallery-section { padding: 56px 20px; }
+      .cta-section { padding: 64px 20px; }
+      .cta-buttons { flex-direction: column; align-items: stretch; }
       .btn-cta { width: 100%; justify-content: center; }
       footer { flex-direction: column; gap: 12px; text-align: center; padding: 24px 20px; }
       .footer-links { flex-wrap: wrap; justify-content: center; gap: 16px; }
-      .phones-wrap { height: 400px; }
-      .phone-main { width: 170px; height: 368px; }
-      .phone-back-left, .phone-back-right { width: 145px; height: 315px; }
+      /* Hero phones — show only the main one centered */
+      .phones-wrap { height: 340px; justify-content: center; }
+      .phone-back-left, .phone-back-right { display: none; }
+      .phone-main { width: 160px; height: 346px; transform: none; }
+      /* Gallery phones smaller on mobile */
+      .gallery-phone { width: 150px; height: 325px; }
+      /* Platform card screens smaller */
+      .platform-card-screens img { width: 72px !important; height: 156px !important; }
     }
 
     /* ── FAQ ── */
