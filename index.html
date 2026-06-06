@@ -93,6 +93,7 @@
       max-width: 1100px; margin: 0 auto;
       display: grid; grid-template-columns: 1fr 1fr;
       gap: 80px; align-items: center;
+      min-width: 0;
     }
 
     .hero-tag {
@@ -161,6 +162,8 @@
     .hero-right {
       position: relative;
       opacity: 0; animation: fadeUp 0.6s 0.3s ease forwards;
+      overflow: hidden;
+      min-width: 0;
     }
 
     .phones-wrap {
@@ -170,6 +173,8 @@
       align-items: flex-end;
       gap: 0;
       height: 560px;
+      overflow: hidden;
+      width: 100%;
     }
 
     .phone-frame {
@@ -484,10 +489,8 @@
       .btn-cta { width: 100%; justify-content: center; }
       footer { flex-direction: column; gap: 12px; text-align: center; padding: 24px 20px; }
       .footer-links { flex-wrap: wrap; justify-content: center; gap: 16px; }
-      /* Hero phones — show only the main one centered */
-      .phones-wrap { height: 340px; justify-content: center; }
-      .phone-back-left, .phone-back-right { display: none; }
-      .phone-main { width: 160px; height: 346px; transform: none; }
+      /* Hero phones — hide entirely on mobile, gallery shows screenshots below */
+      .hero-right { display: none; }
       /* Gallery phones smaller on mobile */
       .gallery-phone { width: 150px; height: 325px; }
       /* Platform card screens smaller */
