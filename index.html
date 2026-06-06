@@ -455,8 +455,11 @@
     /* ── RESPONSIVE ── */
     @media (max-width: 900px) {
       nav { padding: 0 20px; }
+      .nav-right .nav-link { display: none; }
       .hero { grid-template-columns: 1fr; gap: 48px; padding: 100px 20px 60px; }
       .hero-sub { max-width: 100%; }
+      .platform-ctas .platform-row { flex-wrap: wrap; }
+      .btn-platform { width: 100%; justify-content: center; }
       .proof { padding: 24px 20px; }
       .proof-inner { flex-wrap: wrap; gap: 16px; }
       .section { padding: 72px 20px; }
@@ -464,17 +467,39 @@
       .features-section { padding: 72px 20px; }
       .features-layout { grid-template-columns: 1fr; gap: 40px; }
       .features-left { position: static; }
+      .features-grid { grid-template-columns: 1fr; }
       .formula-inner { grid-template-columns: 1fr; gap: 40px; }
       .formula-section { padding: 72px 20px; }
       .platforms-section { padding: 72px 20px; }
       .platform-cards { grid-template-columns: 1fr; }
+      .platform-card-ctas { flex-wrap: wrap; }
+      .btn-sm { flex: 1; justify-content: center; }
       .gallery-section { padding: 72px 20px; }
       .cta-section { padding: 80px 20px; }
+      .cta-buttons { flex-direction: column; align-items: center; }
+      .btn-cta { width: 100%; justify-content: center; }
       footer { flex-direction: column; gap: 12px; text-align: center; padding: 24px 20px; }
+      .footer-links { flex-wrap: wrap; justify-content: center; gap: 16px; }
       .phones-wrap { height: 400px; }
       .phone-main { width: 170px; height: 368px; }
       .phone-back-left, .phone-back-right { width: 145px; height: 315px; }
     }
+
+    /* ── FAQ ── */
+    .faq-item { border-bottom: 1px solid var(--border); }
+    .faq-q {
+      width: 100%; background: none; border: none; cursor: pointer;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 20px 0; font-size: 15px; font-weight: 600; color: var(--ink);
+      text-align: left; gap: 16px; transition: color 0.15s;
+    }
+    .faq-q:hover { color: var(--green); }
+    .faq-icon { font-size: 22px; font-weight: 300; flex-shrink: 0; color: var(--ink-3); transition: transform 0.2s; }
+    .faq-a { display: none; padding-bottom: 20px; }
+    .faq-a p { font-size: 14px; color: var(--ink-3); line-height: 1.7; margin: 0; }
+    .faq-item.open .faq-icon { transform: rotate(45deg); color: var(--green); }
+    .faq-item.open .faq-a { display: block; }
+
   </style>
 </head>
 <body>
@@ -760,6 +785,148 @@
     </div>
   </section>
 
+
+  <!-- FAQ -->
+  <section class="section" style="background:var(--white); border-top:1px solid var(--border);">
+    <div class="section-inner">
+      <div class="reveal">
+        <div class="section-eyebrow">FAQ</div>
+        <h2 class="section-heading">Common questions</h2>
+      </div>
+
+      <div style="margin-top:48px; display:flex; flex-direction:column; gap:0;" id="faq-list">
+
+        <div class="faq-item reveal">
+          <button class="faq-q" onclick="toggleFaq(this)">What is BidRL? <span class="faq-icon">+</span></button>
+          <div class="faq-a"><p>BidRL is an online auction platform that partners with liquidation warehouses across the United States. Buyers can bid on lots of returned, overstock, or used merchandise — including furniture, appliances, electronics, and more — and pick up winning items from a local warehouse location.</p></div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-q" onclick="toggleFaq(this)">What is a buyer's premium? <span class="faq-icon">+</span></button>
+          <div class="faq-a"><p>A buyer's premium is a percentage fee added on top of your winning bid price. For example, if you win a lot at $100 and the buyer's premium is 18%, your total cost is $118. BidMax automatically factors your buyer's premium into the max bid calculation so the number you see is what you actually pay at the door.</p></div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-q" onclick="toggleFaq(this)">How does BidRL bidding work? <span class="faq-icon">+</span></button>
+          <div class="faq-a"><p>BidRL runs timed auctions on individual lots. You place a bid before the auction closes — if you're the highest bidder when time expires, you win. You then pay your winning bid plus the buyer's premium, and pick up the item at the affiliated warehouse. Items are sold as-is, so knowing the resale value before you bid is critical.</p></div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-q" onclick="toggleFaq(this)">How does BidMax calculate my max bid? <span class="faq-icon">+</span></button>
+          <div class="faq-a"><p>BidMax estimates what each lot will sell for on Facebook Marketplace, then works backwards through your costs: Facebook's selling fee, your buyer's premium, your effort cost, and your target profit margin. The result is the highest bid you can place and still hit your profit goal. You set your numbers once in settings and BidMax applies them to every lot automatically.</p></div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-q" onclick="toggleFaq(this)">What is Facebook Marketplace resale value? <span class="faq-icon">+</span></button>
+          <div class="faq-a"><p>Facebook Marketplace resale value is what a real buyer in your local area would actually pay for the item today. BidMax uses AI to estimate this based on the lot title and description — not retail price, not eBay. Local Facebook Marketplace prices are typically 30–60% below retail, which is why using real resale value protects your margin far better than guessing.</p></div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-q" onclick="toggleFaq(this)">Is BidMax free? <span class="faq-icon">+</span></button>
+          <div class="faq-a"><p>Yes — BidMax has a free tier that gives you a set number of analyses per day with no account required on the Chrome extension. The Pro plan ($9.99/month) unlocks unlimited analyses across Chrome, Android, and iOS. You can start using BidMax for free today without a credit card.</p></div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-q" onclick="toggleFaq(this)">What platforms is BidMax available on? <span class="faq-icon">+</span></button>
+          <div class="faq-a"><p>BidMax is available as a Chrome browser extension, an Android app, and an iOS app. The Chrome extension overlays max bid and profit data directly onto BidRL.com as you browse. The mobile apps let you analyze lots from your phone — useful when you're walking an auction floor or checking deals on the go.</p></div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-q" onclick="toggleFaq(this)">How do I make money flipping BidRL items? <span class="faq-icon">+</span></button>
+          <div class="faq-a"><p>The basic model is: buy low at auction, sell locally for a profit. The key is knowing what something is worth on Facebook Marketplace before you bid — not after. Most resellers lose money by overbidding on items they can't sell for what they expected. BidMax solves this by giving you the resale estimate and max bid before you place a single dollar.</p></div>
+        </div>
+
+        <div class="faq-item reveal">
+          <button class="faq-q" onclick="toggleFaq(this)">What items sell best on Facebook Marketplace from BidRL? <span class="faq-icon">+</span></button>
+          <div class="faq-a"><p>The best categories for BidRL flipping on Facebook Marketplace are appliances (washers, dryers, refrigerators), furniture (sofas, beds, dressers), and power tools. These items have high resale value relative to auction prices and consistent local demand. Electronics can be profitable but carry more risk due to condition uncertainty.</p></div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ Schema Markup -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "mainEntity": [
+      {
+        "@type": "Question",
+        "name": "What is BidRL?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "BidRL is an online auction platform that partners with liquidation warehouses across the United States. Buyers can bid on lots of returned, overstock, or used merchandise and pick up winning items from a local warehouse location."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is a buyer's premium?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "A buyer's premium is a percentage fee added on top of your winning bid price. BidMax automatically factors your buyer's premium into the max bid calculation so the number you see is what you actually pay."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does BidRL bidding work?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "BidRL runs timed auctions on individual lots. You place a bid before the auction closes — if you're the highest bidder when time expires, you win. You then pay your winning bid plus the buyer's premium and pick up the item at the affiliated warehouse."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How does BidMax calculate my max bid?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "BidMax estimates what each lot will sell for on Facebook Marketplace, then works backwards through your costs: Facebook's selling fee, your buyer's premium, your effort cost, and your target profit margin. The result is the highest bid you can place and still hit your profit goal."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What is Facebook Marketplace resale value?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Facebook Marketplace resale value is what a real buyer in your local area would actually pay for the item today. BidMax uses AI to estimate this based on the lot title and description — not retail price, not eBay."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "Is BidMax free?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Yes — BidMax has a free tier with no account required on the Chrome extension. The Pro plan ($9.99/month) unlocks unlimited analyses across Chrome, Android, and iOS."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What platforms is BidMax available on?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "BidMax is available as a Chrome browser extension, an Android app, and an iOS app."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "How do I make money flipping BidRL items?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "Buy low at auction, sell locally for a profit. The key is knowing what something is worth on Facebook Marketplace before you bid. BidMax gives you the resale estimate and max bid before you place a single dollar."
+        }
+      },
+      {
+        "@type": "Question",
+        "name": "What items sell best on Facebook Marketplace from BidRL?",
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": "The best categories are appliances (washers, dryers, refrigerators), furniture (sofas, beds, dressers), and power tools. These items have high resale value relative to auction prices and consistent local demand."
+        }
+      }
+    ]
+  }
+  </script>
+
   <!-- CTA -->
   <section class="cta-section">
     <div class="cta-inner reveal">
@@ -795,6 +962,15 @@
       entries.forEach(el => { if (el.isIntersecting) el.target.classList.add('visible'); });
     }, { threshold: 0.08 });
     document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+  </script>
+
+  <script>
+    function toggleFaq(btn) {
+      const item = btn.closest('.faq-item');
+      const isOpen = item.classList.contains('open');
+      document.querySelectorAll('.faq-item.open').forEach(el => el.classList.remove('open'));
+      if (!isOpen) item.classList.add('open');
+    }
   </script>
 </body>
 </html>
