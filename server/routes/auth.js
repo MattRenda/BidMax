@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import appleSignin from 'apple-signin-auth';
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -226,4 +227,82 @@ export async function logout(req, res) {
 export async function findOrCreateUser({ googleId, email, name }) {
   const user = await upsertUser(googleId, email);
   return normalizeUser(user);
+}
+
+// ── POST /auth/apple — Sign in with Apple ──
+export async function appleSignIn(req, res) {
+  try {
+    const { identityToken, fullName, email } = req.body;
+    if (!identityToken) return res.status(400).json({ error: 'identityToken required' });
+
+    // Verify the JWT against Apple's JWKS
+    let applePayload;
+    try {
+      applePayload = await appleSignin.verifyIdToken(identityToken, {
+        audience: 'com.bidmax.app',
+        ignoreExpiration: false,
+      });
+    } catch (e) {
+      return res.status(401).json({ error: 'Invalid Apple identity token', detail: e.message });
+    }
+
+    const appleUserId = applePayload.sub;
+    // Apple only sends email on first sign-in — fall back to payload email
+    const userEmail = email || applePayload.email || `${appleUserId}@privaterelay.appleid.com`;
+    const userName = fullName
+      ? `${fullName.givenName || ''} ${fullName.familyName || ''}`.trim()
+      : null;
+
+    // Find existing user by apple_id or email
+    let { data: existing } = await supabase
+      .from('users')
+      .select('*')
+      .eq('apple_id', appleUserId)
+      .maybeSingle();
+
+    if (!existing) {
+      // Try matching by email (user may have signed in with Google before)
+      const { data: byEmail } = await supabase
+        .from('users')
+        .select('*')
+        .eq('email', userEmail)
+        .maybeSingle();
+
+      if (byEmail) {
+        // Link Apple ID to existing account
+        await supabase
+          .from('users')
+          .update({ apple_id: appleUserId })
+          .eq('id', byEmail.id);
+        existing = { ...byEmail, apple_id: appleUserId };
+      } else {
+        // Create new user
+        const { data: newUser, error } = await supabase
+          .from('users')
+          .insert({
+            apple_id: appleUserId,
+            email: userEmail,
+            name: userName,
+            is_pro: false,
+          })
+          .select()
+          .single();
+        if (error) throw error;
+        existing = newUser;
+      }
+    }
+
+    // Create session
+    const sessionToken = crypto.randomUUID();
+    await supabase.from('sessions').insert({
+      user_id: existing.id,
+      token: sessionToken,
+    });
+
+    const user = normalizeUser(existing);
+    return res.json({ sessionToken, user });
+  } catch (e) {
+    console.error('[Auth] Apple sign-in error:', e);
+    return res.status(500).json({ error: e.message });
+  }
 }
