@@ -75,9 +75,10 @@ app.get('/api/health', (_, res) => res.json({ ok: true }));
 // Auth + billing routes — load lazily so startup errors don't kill the server
 async function loadAuthRoutes() {
   try {
-    const { googleAuth, getMe, logout, deleteAccount } = await import('./routes/auth.js');
+    const { googleAuth, getMe, logout, deleteAccount, appleSignIn } = await import('./routes/auth.js');
     const { createCheckout, createPortal, handleWebhook } = await import('./routes/billing.js');
     app.post('/auth/google', authLimiter, googleAuth);
+    app.post('/auth/apple', authLimiter, appleSignIn);
     app.get('/auth/me', getMe);
     app.post('/auth/logout', logout);
     app.delete('/auth/me', deleteAccount);
