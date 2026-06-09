@@ -90,10 +90,11 @@ async function loadAuthRoutes() {
         let { data: user } = await supabase
           .from('users').select('*').eq('email', DEMO_EMAIL).maybeSingle();
         if (!user) {
-          const { data: newUser } = await supabase
+          const { data: newUser, error: insertError } = await supabase
             .from('users')
-            .insert({ email: DEMO_EMAIL, name: 'Demo', google_id: 'demo', is_pro: true })
+            .insert({ email: DEMO_EMAIL, name: 'Demo', google_id: 'demo-app-review', is_pro: true })
             .select().single();
+          if (insertError) throw insertError;
           user = newUser;
         } else if (!user.is_pro) {
           await supabase.from('users').update({ is_pro: true }).eq('id', user.id);
@@ -102,7 +103,8 @@ async function loadAuthRoutes() {
         const sessionToken = await createSession(user.id);
         res.json({ sessionToken });
       } catch (e) {
-        res.status(500).json({ error: 'demo login failed' });
+        console.error('[/auth/demo]', e);
+        res.status(500).json({ error: String(e?.stack || e?.message || e) });
       }
     });
     app.post('/billing/checkout', createCheckout);
