@@ -75,14 +75,36 @@ app.get('/api/health', (_, res) => res.json({ ok: true }));
 // Auth + billing routes — load lazily so startup errors don't kill the server
 async function loadAuthRoutes() {
   try {
-    const { googleAuth, getMe, logout, deleteAccount, appleSignIn, demoAuth } = await import('./routes/auth.js');
+    const { googleAuth, getMe, logout, deleteAccount, appleSignIn, createSession } = await import('./routes/auth.js');
     const { createCheckout, createPortal, handleWebhook } = await import('./routes/billing.js');
     app.post('/auth/google', authLimiter, googleAuth);
     app.post('/auth/apple', authLimiter, appleSignIn);
-    app.post('/auth/demo', demoAuth);
     app.get('/auth/me', getMe);
     app.post('/auth/logout', logout);
     app.delete('/auth/me', deleteAccount);
+
+    // POST /auth/demo — one-tap demo login for App Review. No credentials, no rate limit.
+    app.post('/auth/demo', async (req, res) => {
+      try {
+        const DEMO_EMAIL = 'demo@bidmaxapp.com';
+        let { data: user } = await supabase
+          .from('users').select('*').eq('email', DEMO_EMAIL).maybeSingle();
+        if (!user) {
+          const { data: newUser } = await supabase
+            .from('users')
+            .insert({ email: DEMO_EMAIL, name: 'Demo', google_id: 'demo', is_pro: true })
+            .select().single();
+          user = newUser;
+        } else if (!user.is_pro) {
+          await supabase.from('users').update({ is_pro: true }).eq('id', user.id);
+          user.is_pro = true;
+        }
+        const sessionToken = await createSession(user.id);
+        res.json({ sessionToken });
+      } catch (e) {
+        res.status(500).json({ error: 'demo login failed' });
+      }
+    });
     app.post('/billing/checkout', createCheckout);
     app.post('/billing/portal', createPortal);
     app.post('/billing/webhook', handleWebhook);
