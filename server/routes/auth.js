@@ -229,50 +229,7 @@ export async function findOrCreateUser({ googleId, email, name }) {
   return normalizeUser(user);
 }
 
-// ── POST /auth/demo — shared demo account for App Store review ──
-export async function demoAuth(req, res) {
-  try {
-    const DEMO_EMAIL = 'demo@bidmaxapp.com';
 
-    // Find or create the shared demo user
-    let { data: demo } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', DEMO_EMAIL)
-      .maybeSingle();
-
-    if (!demo) {
-      const { data: newDemo, error } = await supabase
-        .from('users')
-        .insert({
-          email: DEMO_EMAIL,
-          name: 'BidMax Demo',
-          google_id: 'demo-account',
-          is_pro: true,
-        })
-        .select()
-        .single();
-      if (error) throw error;
-      demo = newDemo;
-    } else if (!demo.is_pro) {
-      // Ensure demo is always Pro
-      await supabase.from('users').update({ is_pro: true }).eq('id', demo.id);
-      demo.is_pro = true;
-    }
-
-    // Create a fresh session token each time
-    const sessionToken = crypto.randomUUID();
-    await supabase.from('sessions').insert({
-      user_id: demo.id,
-      token: sessionToken,
-    });
-
-    return res.json({ sessionToken, user: normalizeUser(demo) });
-  } catch (e) {
-    console.error('[Auth] Demo auth error:', e);
-    return res.status(500).json({ error: e.message });
-  }
-}
 export async function appleSignIn(req, res) {
   try {
     const { identityToken, fullName, email } = req.body;
