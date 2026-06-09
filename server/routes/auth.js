@@ -249,9 +249,7 @@ export async function appleSignIn(req, res) {
     const appleUserId = applePayload.sub;
     // Apple only sends email on first sign-in — fall back to payload email
     const userEmail = email || applePayload.email || `${appleUserId}@privaterelay.appleid.com`;
-    const userName = fullName
-      ? `${fullName.givenName || ''} ${fullName.familyName || ''}`.trim()
-      : null;
+    // name column does not exist in users table — omit
 
     // Find existing user by apple_id or email
     let { data: existing } = await supabase
@@ -282,7 +280,6 @@ export async function appleSignIn(req, res) {
           .insert({
             apple_id: appleUserId,
             email: userEmail,
-            name: userName,
             is_pro: false,
           })
           .select()
