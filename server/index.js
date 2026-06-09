@@ -97,7 +97,7 @@ async function loadAuthRoutes() {
         if (!user) {
           const { data: newUser, error: insertError } = await supabase
             .from('users')
-            .insert({ email: DEMO_EMAIL, name: 'Demo', google_id: 'demo-app-review', is_pro: true })
+            .insert({ email: DEMO_EMAIL, google_id: 'demo-app-review', is_pro: true })
             .select().single();
           if (insertError) throw insertError;
           user = newUser;
