@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import crypto from 'node:crypto';
 import appleSignin from 'apple-signin-auth';
 const supabase = createClient(
   process.env.SUPABASE_URL,
