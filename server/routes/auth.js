@@ -10,6 +10,9 @@ const FREE_DAILY_LIMIT = 10;
 
 // Normalize raw DB user row to consistent shape
 function normalizeUser(user) {
+  // User is Pro if paid OR on active trial
+  const onTrial = user.trial_ends_at && new Date(user.trial_ends_at) > new Date();
+  if (onTrial && !user.is_pro) user = { ...user, is_pro: true };
   if (!user) return null;
   return {
     id: user.id,
@@ -130,14 +133,61 @@ export async function checkAndIncrementUsage(deviceId, userId) {
   return { allowed: true, isPro: false, used: current + 1, limit: FREE_DAILY_LIMIT };
 }
 
+// ── Redeem promo code — grants trial Pro access ──
+async function redeemPromoCode(userId, code) {
+  if (!code) return null;
+
+  const cleanCode = code.toUpperCase().trim();
+
+  // Find active promo code
+  const { data: promo } = await supabase
+    .from('promo_codes')
+    .select('*')
+    .eq('code', cleanCode)
+    .eq('active', true)
+    .maybeSingle();
+
+  if (!promo) return null;
+  if (promo.expires_at && new Date(promo.expires_at) < new Date()) return null;
+  if (promo.max_uses && promo.uses >= promo.max_uses) return null;
+
+  // Set trial end date
+  const trialEndsAt = new Date();
+  trialEndsAt.setDate(trialEndsAt.getDate() + promo.trial_days);
+
+  // Update user with trial + referred_by
+  await supabase
+    .from('users')
+    .update({
+      promo_code: cleanCode,
+      trial_ends_at: trialEndsAt.toISOString(),
+      referred_by: promo.affiliate_id || null,
+    })
+    .eq('id', userId);
+
+  // Increment promo usage count
+  await supabase
+    .from('promo_codes')
+    .update({ uses: promo.uses + 1 })
+    .eq('code', cleanCode);
+
+  console.log(`[Auth] Promo ${cleanCode} redeemed by user ${userId} — trial until ${trialEndsAt.toISOString()}`);
+  return { trialEndsAt, trialDays: promo.trial_days, affiliateId: promo.affiliate_id };
+}
+
 // ── POST /auth/google ──
 export async function googleAuth(req, res) {
   try {
-    const { idToken, accessToken, ref } = req.body;
+    const { idToken, accessToken, ref, promoCode } = req.body;
     const token = accessToken || idToken;
     if (!token) return res.status(400).json({ error: 'Missing token' });
     const { googleId, email } = await verifyGoogleToken(token);
     const user = await upsertUser(googleId, email, ref || null);
+
+    // Redeem promo code if provided and user hasn't used one before
+    if (promoCode && !user.promo_code) {
+      await redeemPromoCode(user.id, promoCode);
+    }
     const session = await createSession(user.id);
     res.json({
       token: session.token,
@@ -232,6 +282,35 @@ export async function findOrCreateUser({ googleId, email, name }) {
   return normalizeUser(user);
 }
 
+
+// ── POST /auth/redeem-promo — redeem a promo code after sign in ──
+export async function redeemPromo(req, res) {
+  try {
+    const { promoCode } = req.body;
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) return res.status(401).json({ error: 'Not authenticated' });
+    if (!promoCode) return res.status(400).json({ error: 'promoCode required' });
+
+    const user = await validateSession(token);
+    if (!user) return res.status(401).json({ error: 'Invalid session' });
+
+    if (user.promo_code) {
+      return res.status(400).json({ error: 'Promo code already redeemed' });
+    }
+
+    const result = await redeemPromoCode(user.id, promoCode);
+    if (!result) {
+      return res.status(400).json({ error: 'Invalid or expired promo code' });
+    }
+
+    const { data: freshUser } = await supabase
+      .from('users').select('*').eq('id', user.id).single();
+
+    res.json({ ok: true, user: normalizeUser(freshUser), trialDays: result.trialDays, trialEndsAt: result.trialEndsAt });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+}
 
 export async function appleSignIn(req, res) {
   try {
