@@ -157,8 +157,40 @@ export async function analyzeBatch(req, res) {
   for (const lot of lots) {
     const key = lot.lotId || lot.title?.slice(0, 60) || String(Math.random());
     const cached = getCached(key);
-    if (cached) results[lot.lotId] = { ...cached, cached: true };
-    else toAnalyze.push({ ...lot, _key: key });
+    if (cached) {
+      results[lot.lotId] = { ...cached, cached: true };
+    } else if (fromCache && lot.lotId) {
+      // fromCache=true means: look up stored resell_value from DB, never re-analyze
+      try {
+        const { createClient } = await import('@supabase/supabase-js');
+        const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+        const { data: dbLot } = await supabase
+          .from('analyzed_lots')
+          .select('resell_value, title, lot_notes')
+          .eq('lot_number', lot.lotId)
+          .maybeSingle();
+        if (dbLot?.resell_value > 0) {
+          const result = {
+            lotId: lot.lotId,
+            lotTitle: dbLot.title || lot.title,
+            totalEstimatedValue: dbLot.resell_value,
+            lotNotes: dbLot.lot_notes || '',
+            valueSource: 'db',
+            breakdown: calcBid(dbLot.resell_value, s),
+            cached: true,
+          };
+          setCached(key, result);
+          results[lot.lotId] = result;
+        } else {
+          toAnalyze.push({ ...lot, _key: key });
+        }
+      } catch (err) {
+        console.error('[analyze-batch] DB lookup error:', err);
+        toAnalyze.push({ ...lot, _key: key });
+      }
+    } else {
+      toAnalyze.push({ ...lot, _key: key });
+    }
   }
 
   if (toAnalyze.length === 0) return res.json({ results });
@@ -226,6 +258,9 @@ Return ONLY a JSON array, no markdown, one object per lot, same order:
     let rawText = message.content[0].text.replace(/```json|```/g, '').trim();
     let parsed;
     try {
+      // Find the JSON array in the response even if there's surrounding text
+      const arrayMatch = rawText.match(/\[[\s\S]*\]/);
+      if (arrayMatch) rawText = arrayMatch[0];
       parsed = JSON.parse(rawText);
     } catch {
       const lastBrace = rawText.lastIndexOf('}');
@@ -233,6 +268,7 @@ Return ONLY a JSON array, no markdown, one object per lot, same order:
         try { parsed = JSON.parse(rawText.slice(0, lastBrace + 1) + ']'); } catch { parsed = []; }
       } else { parsed = []; }
     }
+    if (!Array.isArray(parsed)) parsed = [];
 
     for (const [i, lot] of toAnalyze.entries()) {
       const data = parsed[i] || {};
