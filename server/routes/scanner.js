@@ -64,14 +64,29 @@ async function identifyItems(items, imageData) {
 
   const contentBlocks = [{
     type: 'text',
-    text: `Look at each image and identify the exact product — brand, model number, and approximate retail price. Be specific.
+    text: `You are an expert resell value estimator. For each auction lot, analyze the image AND the title together to identify the item and estimate its current retail price.
+
+ANALYSIS RULES:
+1. READ ALL TEXT on boxes, packaging, labels — brand, model, dimensions, specs are printed there
+2. USE BOTH image AND title — they together tell the full story
+3. DIMENSIONS MATTER ENORMOUSLY — a 14x7x3 ft frame pool ($400 retail) vs a small inflatable pool ($30) look similar but are completely different products. Always factor in size.
+4. CONDITION affects value significantly — assess from the image
+5. For UNKNOWN brands or generic items, estimate retail from category, size, and specs
+6. For USED or DAMAGED items, estimate used market value not retail
+7. Never default to a low value out of uncertainty — make your best specific estimate
+
+CONDITION GUIDE:
+- new/sealed: full retail value
+- open box: 70-85% of retail
+- used good: 40-60% of retail
+- used fair/damaged: 15-35% of retail
 
 ${lotsText}
 
-Return ONLY a JSON array, same order:
-[{"lotId":"ID","brand":"MERACH","model":"W50","retailPrice":290,"condition":"new/sealed","confidence":"high|medium|low"}]
+Return ONLY a JSON array, one entry per lot in the same order:
+[{"lotId":"RD1234","brand":"Intex","model":"14x8x3 Rectangular Frame Pool","retailPrice":450,"condition":"new/sealed","confidence":"high|medium|low"}]
 
-If you cannot identify the item, use confidence "low" and estimate retailPrice from category knowledge.`
+confidence: high = brand+model clearly identified, medium = category clear but specs uncertain, low = generic/unclear`
   }];
 
   items.forEach((item, i) => {
@@ -110,12 +125,12 @@ async function searchRetailPrice(brand, model) {
     return searchCache.get(key);
   }
   try {
-    const query = `${brand} ${model} price`;
+    const query = `${brand} ${model} retail price buy`;
     const step1 = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 512,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-      messages: [{ role: 'user', content: `Search for the current retail price of the ${brand} ${model}. What does it sell for new on Amazon or Walmart?` }],
+      messages: [{ role: 'user', content: `Search for the current price of the ${brand} ${model}. What does it sell for new on Amazon or Walmart? Also check Facebook Marketplace or eBay sold listings for used resell value.` }],
     });
 
     // Extract all $ amounts from search results and Claude's text
@@ -132,12 +147,16 @@ async function searchRetailPrice(brand, model) {
 
     const prices = [...allText.matchAll(/\$([0-9,]+(?:\.[0-9]{1,2})?)/g)]
       .map(m => parseFloat(m[1].replace(',', '')))
-      .filter(p => p > 20 && p < 5000);
+      .filter(p => p > 5 && p < 10000);
 
     if (prices.length > 0) {
       prices.sort((a, b) => a - b);
-      const price = prices[Math.floor(prices.length / 2)];
-      console.log(`[Scan] Web search: ${brand} ${model} = $${price}`);
+      // Use median to avoid outliers skewing the estimate
+      const mid = Math.floor(prices.length / 2);
+      const price = prices.length % 2 === 0
+        ? (prices[mid - 1] + prices[mid]) / 2
+        : prices[mid];
+      console.log(`[Scan] Web search: ${brand} ${model} = $${price} (from ${prices.length} price points: ${prices.slice(0,5).join(', ')})`);
       searchCache.set(key, price);
       return price;
     }
@@ -161,12 +180,13 @@ async function analyzeBatchWithVision(items) {
 
   const searchTasks = identifications
     .map((id, i) => ({ id, i }))
-    .filter(({ id }) => id?.confidence === 'high' && id?.brand && id?.model);
+    .filter(({ id }) => id?.confidence === 'high' && id?.brand && id?.model)
+    .slice(0, 5); // Max 5 web searches per batch of 10 items to control costs
 
   for (const { id, i: idx } of searchTasks) {
     const searched = await searchRetailPrice(id.brand, id.model);
     retailPrices[idx] = searched || id?.retailPrice || null;
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 5000));
   }
 
   // Fill in non-searched items with AI estimates
@@ -509,29 +529,16 @@ export async function getLotAnalysis(req, res) {
 
 // GET /api/items?affiliateId=75&page=1&limit=24 — paginated analyzed items
 export async function getItems(req, res) {
-  const { affiliateId, page = 1, limit = 24, sort = 'ending' } = req.query;
+  const { affiliateId, page = 1, limit = 24, sort = 'ending', all = 'false' } = req.query;
   if (!affiliateId) return res.status(400).json({ error: 'affiliateId required' });
 
   try {
     const now = Math.floor(Date.now() / 1000);
-    const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(50, parseInt(limit));
-    const offset = (pageNum - 1) * limitNum;
-
     const orderCol = sort === 'resell' ? 'resell_value' : 'ends_at';
     const ascending = sort !== 'resell';
+    const fetchAll = all === 'true';
 
-    const { data, error, count } = await supabase
-      .from('analyzed_lots')
-      .select('*', { count: 'exact' })
-      .eq('affiliate_id', String(affiliateId))
-      .gt('ends_at', now)
-      .order(orderCol, { ascending })
-      .range(offset, offset + limitNum - 1);
-
-    if (error) throw error;
-
-    // Check if user is Pro — strip resell_value and lot_notes for free users
+    // Check if user is Pro
     let isPro = false;
     try {
       const token = req.headers.authorization?.replace('Bearer ', '') || req.query.sessionToken;
@@ -542,18 +549,41 @@ export async function getItems(req, res) {
       }
     } catch(e) {}
 
+    let query = supabase
+      .from('analyzed_lots')
+      .select('*', { count: 'exact' })
+      .eq('affiliate_id', String(affiliateId))
+      .gt('ends_at', now)
+      .order(orderCol, { ascending });
+
+    if (fetchAll) {
+      // Return all active lots in one request
+      query = query.limit(2000);
+    } else {
+      const pageNum = Math.max(1, parseInt(page));
+      const limitNum = Math.min(50, parseInt(limit));
+      const offset = (pageNum - 1) * limitNum;
+      query = query.range(offset, offset + limitNum - 1);
+    }
+
+    const { data, error, count } = await query;
+    if (error) throw error;
+
     const items = (data || []).map(item => ({
       ...item,
       resell_value: isPro ? item.resell_value : null,
       lot_notes: isPro ? item.lot_notes : null,
     }));
 
+    const pageNum = fetchAll ? 1 : Math.max(1, parseInt(page));
+    const limitNum = fetchAll ? items.length : Math.min(50, parseInt(limit));
+
     res.json({
       items,
       page: pageNum,
       limit: limitNum,
       total: count || 0,
-      total_pages: Math.ceil((count || 0) / limitNum),
+      total_pages: fetchAll ? 1 : Math.ceil((count || 0) / limitNum),
       isPro,
     });
   } catch(e) {
@@ -562,7 +592,6 @@ export async function getItems(req, res) {
   }
 }
 
-// Get top picks from DB for an affiliate
 export async function getTopPicks(req, res) {
   const { affiliateId } = req.query;
   if (!affiliateId) return res.status(400).json({ error: 'affiliateId required' });
@@ -596,3 +625,53 @@ export async function getTopPicks(req, res) {
   }
 }
 
+// GET /api/reveal/:lotNumber — usage-gated lot lookup for free users
+export async function revealLot(req, res) {
+  const { lotNumber } = req.params;
+  const { personalBypass } = req.query;
+  const isPersonalBypass = personalBypass === 'matthew-pro-bypass';
+
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '') || req.query.sessionToken;
+    const deviceId = req.headers['x-device-id'] || req.query.deviceId;
+
+    let userId = null;
+    let isPro = false;
+
+    if (token) {
+      const { validateSession } = await import('./auth.js');
+      const user = await validateSession(token);
+      if (user) {
+        userId = user.id;
+        isPro = user.is_pro || false;
+      }
+    }
+
+    // Check and increment usage for non-Pro users
+    if (!isPersonalBypass && !isPro) {
+      const { checkAndIncrementUsage } = await import('./auth.js');
+      const usage = await checkAndIncrementUsage(deviceId, userId);
+      if (!usage.allowed) {
+        return res.status(402).json({
+          error: 'Daily limit reached',
+          code: 'LIMIT_REACHED',
+          used: usage.used,
+          limit: usage.limit,
+        });
+      }
+      res.setHeader('X-Usage-Used', usage.used);
+      res.setHeader('X-Usage-Limit', usage.limit);
+    }
+
+    const { data, error } = await supabase
+      .from('analyzed_lots')
+      .select('*')
+      .eq('lot_number', lotNumber)
+      .single();
+
+    if (error || !data) return res.status(404).json({ error: 'Not found' });
+    res.json(data);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+}
