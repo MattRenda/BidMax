@@ -575,15 +575,15 @@ export async function getItems(req, res) {
       lot_notes: isPro ? item.lot_notes : null,
     }));
 
-    const pageNum = fetchAll ? 1 : Math.max(1, parseInt(page));
-    const limitNum = fetchAll ? items.length : Math.min(50, parseInt(limit));
+    const responsePage = fetchAll ? 1 : Math.max(1, parseInt(page));
+    const responseLimit = fetchAll ? items.length : Math.min(50, parseInt(limit));
 
-    res.json({
+    return res.json({
       items,
-      page: pageNum,
-      limit: limitNum,
+      page: responsePage,
+      limit: responseLimit,
       total: count || 0,
-      total_pages: fetchAll ? 1 : Math.ceil((count || 0) / limitNum),
+      total_pages: fetchAll ? 1 : Math.ceil((count || 0) / responseLimit),
       isPro,
     });
   } catch(e) {
