@@ -19,6 +19,8 @@ function normalizeUser(user) {
     email: user.email,
     googleId: user.google_id,
     is_pro: user.is_pro || false,
+    trial_ends_at: user.trial_ends_at || null,
+    promo_code: user.promo_code || null,
   };
 }
 
