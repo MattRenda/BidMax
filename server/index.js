@@ -116,6 +116,57 @@ async function loadAuthRoutes() {
     app.post('/billing/checkout', createCheckout);
     app.post('/billing/portal', createPortal);
     app.post('/billing/webhook', handleWebhook);
+    // GET /admin/affiliate-report — monthly payout report
+    app.get('/admin/affiliate-report', async (req, res) => {
+      const secret = req.headers['x-admin-secret'];
+      if (secret !== process.env.ADMIN_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+
+      const now = new Date();
+      const periodStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+      const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+
+      // Count Pro users per referral source and calculate 20% commission
+      const { data: users } = await supabase
+        .from('users')
+        .select('referred_by, is_pro')
+        .not('referred_by', 'is', null);
+
+      // Get affiliate names for display
+      const { data: affiliateRows } = await supabase
+        .from('affiliates')
+        .select('id, affiliate_id, name');
+      const affiliateMap = {};
+      for (const a of affiliateRows || []) affiliateMap[a.id] = a;
+
+      const report = {};
+      for (const user of users || []) {
+        const key = user.referred_by;
+        if (!report[key]) {
+          const aff = affiliateMap[key];
+          report[key] = {
+            ref: key,
+            name: aff?.name || key,
+            total_users: 0,
+            pro_users: 0,
+            gross_revenue: 0,
+            commission: 0,
+          };
+        }
+        report[key].total_users++;
+        if (user.is_pro) {
+          report[key].pro_users++;
+          report[key].gross_revenue += 9.99;
+          report[key].commission += 9.99 * 0.20;
+        }
+      }
+
+      res.json({
+        period: { start: periodStart, end: periodEnd },
+        affiliates: Object.values(report).sort((a, b) => b.commission - a.commission),
+        total_commission: Object.values(report).reduce((sum, a) => sum + a.commission, 0),
+      });
+    });
+
     console.log('Auth + billing routes loaded');
   } catch (err) {
     console.error('Failed to load auth/billing routes:', err.message);
