@@ -504,6 +504,7 @@ export async function revealLot(req, res) {
       .single();
 
     if (error || !data) return res.status(404).json({ error: 'Not found' });
+
     res.json(data);
   } catch(e) {
     res.status(500).json({ error: e.message });
