@@ -37,7 +37,7 @@ async function verifyGoogleToken(token) {
 }
 
 // ── Get or create user from Google ──
-export async function upsertUser(googleId, email) {
+export async function upsertUser(googleId, email, referredBy = null) {
   let { data: user } = await supabase
     .from('users')
     .select('*')
@@ -58,9 +58,11 @@ export async function upsertUser(googleId, email) {
         .single();
       user = updated;
     } else {
+      const insert = { google_id: googleId, email };
+      if (referredBy) insert.referred_by = referredBy;
       const { data: created, error } = await supabase
         .from('users')
-        .insert({ google_id: googleId, email })
+        .insert(insert)
         .select()
         .single();
       if (error) throw new Error('Failed to create user: ' + JSON.stringify(error));
@@ -131,11 +133,11 @@ export async function checkAndIncrementUsage(deviceId, userId) {
 // ── POST /auth/google ──
 export async function googleAuth(req, res) {
   try {
-    const { idToken, accessToken } = req.body;
+    const { idToken, accessToken, ref } = req.body;
     const token = accessToken || idToken;
     if (!token) return res.status(400).json({ error: 'Missing token' });
     const { googleId, email } = await verifyGoogleToken(token);
-    const user = await upsertUser(googleId, email);
+    const user = await upsertUser(googleId, email, ref || null);
     const session = await createSession(user.id);
     res.json({
       token: session.token,
