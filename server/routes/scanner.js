@@ -43,50 +43,74 @@ async function fetchAllItems(affiliateId) {
   ).values()];
 }
 
-// Fetch image as base64
-async function fetchImageBase64(url) {
-  try {
-    const res = await fetch(url, { timeout: 5000 });
-    if (!res.ok) return null;
-    const contentType = res.headers.get('content-type') || 'image/jpeg';
-    const buffer = await res.arrayBuffer();
-    return { base64: Buffer.from(buffer).toString('base64'), mediaType: contentType.split(';')[0] };
-  } catch { return null; }
+// Convert a BidRL thumbnail URL to full resolution
+// Thumbnails end in _t.jpg; full-size drops the _t suffix
+function toFullResUrl(url) {
+  if (!url) return null;
+  // e.g. .../wIMG_20260610_090559842_HDR_t.jpg -> .../wIMG_20260610_090559842_HDR.jpg
+  return url.replace(/_t(\.[a-zA-Z]+)(\?.*)?$/, '$1$2');
 }
 
-// Analyze a batch of items with vision
-// Step 1: identify items from images
-async function identifyItems(items, imageData) {
+// Fetch image as base64 — tries full-res first, falls back to thumbnail
+async function fetchImageBase64(url) {
+  const tryFetch = async (u) => {
+    try {
+      const res = await fetch(u, { timeout: 8000 });
+      if (!res.ok) return null;
+      const contentType = res.headers.get('content-type') || 'image/jpeg';
+      const buffer = await res.arrayBuffer();
+      // Skip absurdly large images (>5MB) to stay within model limits
+      if (buffer.byteLength > 5_000_000) return null;
+      return { base64: Buffer.from(buffer).toString('base64'), mediaType: contentType.split(';')[0] };
+    } catch { return null; }
+  };
+
+  const fullRes = toFullResUrl(url);
+  if (fullRes && fullRes !== url) {
+    const full = await tryFetch(fullRes);
+    if (full) return full;
+  }
+  return tryFetch(url);
+}
+
+// ─────────────────────────────────────────────────────────────
+// STEP 1 — CLASSIFIER (no pricing). Extract structured tags only.
+// AI is used here purely to identify and label, never to value.
+// ─────────────────────────────────────────────────────────────
+async function classifyItems(items, imageData) {
   const lotsText = items.map(item => {
     const cleanTitle = item.title.replace(/[-–—]?\s*retail\s*\$?[\d,]+(\.\d+)?/gi, '').trim();
-    return `${item.lot_number}: ${cleanTitle}`;
+    const auctionHint = item.auction_title ? ` [Auction: ${item.auction_title.slice(0, 60)}]` : '';
+    return `${item.lot_number}: ${cleanTitle}${auctionHint}`;
   }).join('\n');
 
   const contentBlocks = [{
     type: 'text',
-    text: `You are an expert resell value estimator. For each auction lot, analyze the image AND the title together to identify the item and estimate its current retail price.
+    text: `You are an expert product identifier for a resale/liquidation business. Your ONLY job is to identify and classify each item. DO NOT estimate prices — another system handles pricing.
 
-ANALYSIS RULES:
-1. READ ALL TEXT on boxes, packaging, labels — brand, model, dimensions, specs are printed there
-2. USE BOTH image AND title — they together tell the full story
-3. DIMENSIONS MATTER ENORMOUSLY — a 14x7x3 ft frame pool ($400 retail) vs a small inflatable pool ($30) look similar but are completely different products. Always factor in size.
-4. CONDITION affects value significantly — assess from the image
-5. For UNKNOWN brands or generic items, estimate retail from category, size, and specs
-6. For USED or DAMAGED items, estimate used market value not retail
-7. Never default to a low value out of uncertainty — make your best specific estimate
+For each lot, use the image (primary for identification) and the title + auction title (primary for condition) to extract structured data.
 
-CONDITION GUIDE:
-- new/sealed: full retail value
-- open box: 70-85% of retail
-- used good: 40-60% of retail
-- used fair/damaged: 15-35% of retail
+IDENTIFICATION RULES:
+- READ ALL TEXT visible on boxes, packaging, labels — brand and model are often printed there
+- The image is your best tool for identifying brand, model, and exact variant
+- A generic title like "Coffee Machine" with an image clearly showing a Breville Barista Express should be identified as Breville Barista Express
+- Capture dimensions/size when visible — they massively affect value (a 14ft frame pool vs a kiddie pool)
+
+CONDITION RULES (priority order):
+1. Title keywords first: NEW/SEALED/NIB → new; OPEN BOX/OPENED → open_box; USED/AS-IS/DAMAGED/PARTS → used_fair; GENTLY USED/REFURBISHED → used_good
+2. Auction title patterns: "returns"/"dot com"/"overstock" → likely new; "undeliverable"/"variety" → likely open_box; "liquidation"/"salvage"/"estate" → likely used
+3. Image only if title and auction give no signal
+
+CATEGORY: pick the single best fit from:
+electronics, appliance_large, appliance_small, furniture, tools, sporting_goods, gym_equipment, outdoor, toys, kitchenware, home_goods, apparel, health_beauty, automotive, media, collectible, bulk_lot, other
 
 ${lotsText}
 
-Return ONLY a JSON array, one entry per lot in the same order:
-[{"lotId":"RD1234","brand":"Intex","model":"14x8x3 Rectangular Frame Pool","retailPrice":450,"condition":"new/sealed","confidence":"high|medium|low"}]
+Return ONLY a JSON array, one entry per lot, same order. NO prices:
+[{"lotId":"RD1234","category":"outdoor","subtype":"rectangular frame pool","brand":"Intex","model":"14ft x 8ft x 3ft","sizeClass":"large","keywords":["pool","frame","14ft"],"condition":"new","idConfidence":"high"}]
 
-confidence: high = brand+model clearly identified, medium = category clear but specs uncertain, low = generic/unclear`
+idConfidence: high = brand+model clearly identified; medium = category+subtype clear, brand uncertain; low = generic/unclear.
+brand/model may be null if genuinely not identifiable. sizeClass: small|medium|large.`
   }];
 
   items.forEach((item, i) => {
@@ -99,7 +123,7 @@ confidence: high = brand+model clearly identified, medium = category clear but s
 
   const message = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
-    max_tokens: Math.min(100 * items.length + 200, 4096),
+    max_tokens: Math.min(120 * items.length + 200, 4096),
     messages: [{ role: 'user', content: contentBlocks }],
   });
 
@@ -114,27 +138,44 @@ confidence: high = brand+model clearly identified, medium = category clear but s
   }
 }
 
-// Step 2: web search retail price for high-confidence identifications
-// Cache web search results to avoid duplicate searches within a scan
+// ─────────────────────────────────────────────────────────────
+// STEP 3 — COMP LOOKUP. Returns {retail, resale} from real listings.
+// For branded items: search the product. For generic high-value
+// items: search the category + size + "used sold price".
+// ─────────────────────────────────────────────────────────────
 const searchCache = new Map();
 
-async function searchRetailPrice(brand, model) {
-  const key = `${brand} ${model}`.toLowerCase();
+function buildSearchQuery(tag) {
+  const brand = tag.brand || '';
+  const model = tag.model || '';
+  if (brand && model) return `${brand} ${model}`.trim();
+  // Generic high-value item: build a descriptive category query
+  const parts = [tag.subtype || tag.category, tag.sizeClass !== 'medium' ? tag.sizeClass : ''].filter(Boolean);
+  return parts.join(' ').trim();
+}
+
+async function searchComps(tag) {
+  const queryBase = buildSearchQuery(tag);
+  if (!queryBase) return null;
+  const key = queryBase.toLowerCase();
   if (searchCache.has(key)) {
-    console.log(`[Scan] Cache hit: ${brand} ${model} = $${searchCache.get(key)}`);
     return searchCache.get(key);
   }
+
+  const isGeneric = !(tag.brand && tag.model);
+  const prompt = isGeneric
+    ? `Find the resale value of a ${queryBase} (condition: ${tag.condition || 'used'}). Search Facebook Marketplace, eBay sold listings, and Craigslist for what these ACTUALLY SELL FOR used. Report the typical selling price range, not new retail.`
+    : `Find pricing for the ${queryBase}. Report (1) current NEW retail price on Amazon/Walmart, and (2) USED resale value from eBay sold listings or Facebook Marketplace. Give both numbers if available.`;
+
   try {
-    const query = `${brand} ${model} retail price buy`;
-    const step1 = await anthropic.messages.create({
+    const resp = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 512,
+      max_tokens: 700,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-      messages: [{ role: 'user', content: `Search for the current price of the ${brand} ${model}. What does it sell for new on Amazon or Walmart? Also check Facebook Marketplace or eBay sold listings for used resell value.` }],
+      messages: [{ role: 'user', content: prompt }],
     });
 
-    // Extract all $ amounts from search results and Claude's text
-    const allText = step1.content
+    const allText = resp.content
       .map(b => {
         if (b.type === 'text') return b.text;
         if (b.type === 'web_search_tool_result') {
@@ -146,85 +187,141 @@ async function searchRetailPrice(brand, model) {
       .join(' ');
 
     const prices = [...allText.matchAll(/\$([0-9,]+(?:\.[0-9]{1,2})?)/g)]
-      .map(m => parseFloat(m[1].replace(',', '')))
-      .filter(p => p > 5 && p < 10000);
+      .map(m => parseFloat(m[1].replace(/,/g, '')))
+      .filter(p => p > 3 && p < 15000);
 
-    if (prices.length > 0) {
-      prices.sort((a, b) => a - b);
-      // Use median to avoid outliers skewing the estimate
-      const mid = Math.floor(prices.length / 2);
-      const price = prices.length % 2 === 0
-        ? (prices[mid - 1] + prices[mid]) / 2
-        : prices[mid];
-      console.log(`[Scan] Web search: ${brand} ${model} = $${price} (from ${prices.length} price points: ${prices.slice(0,5).join(', ')})`);
-      searchCache.set(key, price);
-      return price;
+    if (prices.length === 0) { searchCache.set(key, null); return null; }
+
+    prices.sort((a, b) => a - b);
+    // Trim outliers: drop top and bottom 10% when we have enough points
+    let trimmed = prices;
+    if (prices.length >= 6) {
+      const cut = Math.floor(prices.length * 0.1);
+      trimmed = prices.slice(cut, prices.length - cut);
     }
-    return null;
-  } catch(e) {
-    console.error('[Scan] Web search error:', e.message);
+    const mid = Math.floor(trimmed.length / 2);
+    const median = trimmed.length % 2 === 0
+      ? (trimmed[mid - 1] + trimmed[mid]) / 2
+      : trimmed[mid];
+
+    const result = { median: Math.round(median), isGeneric, count: prices.length };
+    console.log(`[Scan] Comps "${queryBase}" → $${result.median} (${prices.length} pts: ${prices.slice(0,6).join(', ')})`);
+    searchCache.set(key, result);
+    return result;
+  } catch (e) {
+    console.error('[Scan] Comp search error:', e.message);
     return null;
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// STEP 2 — ROUTER + PRICING. Decide per-item how to price it.
+//   branded            → comp lookup on the product
+//   generic high-value → category comp lookup ("used X sold price")
+//   low-value/unclear  → skip search, use conservative heuristic
+// Condition adjusts which comps we trust, not a blind multiplier.
+// ─────────────────────────────────────────────────────────────
+
+// Rough retail anchors by category for when we have NO comps and NO
+// brand — used only as a last-resort floor so generic high-value items
+// (furniture, pool tables) don't collapse to near-zero.
+const CATEGORY_RETAIL_ANCHOR = {
+  furniture: 200, gym_equipment: 250, appliance_large: 350, appliance_small: 80,
+  electronics: 120, tools: 90, sporting_goods: 80, outdoor: 150, toys: 35,
+  kitchenware: 50, home_goods: 45, apparel: 30, health_beauty: 35,
+  automotive: 70, media: 20, collectible: 60, bulk_lot: 60, other: 50,
+};
+const SIZE_MULT = { small: 0.7, medium: 1.0, large: 1.8 };
+
+// Decide whether an item is worth a (paid) comp search.
+function shouldSearch(tag) {
+  if (tag.idConfidence === 'low' && !(tag.brand && tag.model)) {
+    // only search low-confidence if it's a known high-variance high-value category
+    return ['furniture', 'gym_equipment', 'appliance_large', 'outdoor'].includes(tag.category);
+  }
+  // branded → always worth verifying
+  if (tag.brand && tag.model) return true;
+  // generic but high-value category → worth a category comp search
+  if (['furniture', 'gym_equipment', 'appliance_large', 'outdoor', 'electronics'].includes(tag.category)) return true;
+  // estimate a rough anchor; search if it clears $100
+  const anchor = (CATEGORY_RETAIL_ANCHOR[tag.category] || 50) * (SIZE_MULT[tag.sizeClass] || 1);
+  return anchor >= 100;
+}
+
+// Convert a comp result + condition into a final FB resale number.
+function priceFromComps(comp, tag) {
+  if (!comp || !comp.median) return null;
+  // If comps were generic (already "used sold" prices), they ARE the resale value.
+  // But web search can't guarantee sold-only data — some results may be retail
+  // asking prices, which skew high. Apply a conservative hedge so we don't
+  // overvalue (overpaying is worse for a reseller than missing a deal).
+  if (comp.isGeneric) {
+    return Math.round(comp.median * 0.85);
+  }
+  // Branded comps mix new-retail and used; convert to local FB resale by condition.
+  const cond = (tag.condition || 'used_good');
+  let factor;
+  if (cond.includes('new')) factor = 0.62;
+  else if (cond.includes('open')) factor = 0.55;
+  else if (cond.includes('good')) factor = 0.48;
+  else factor = 0.32; // used_fair / damaged
+  return Math.round(comp.median * factor);
+}
+
+// Last-resort heuristic when we have no comps at all.
+function priceFromHeuristic(tag) {
+  const anchor = (CATEGORY_RETAIL_ANCHOR[tag.category] || 50) * (SIZE_MULT[tag.sizeClass] || 1);
+  const cond = (tag.condition || 'used_good');
+  let factor;
+  if (cond.includes('new')) factor = 0.55;
+  else if (cond.includes('open')) factor = 0.48;
+  else if (cond.includes('good')) factor = 0.40;
+  else factor = 0.25;
+  return Math.round(anchor * factor);
+}
+
 async function analyzeBatchWithVision(items) {
   const imageData = await Promise.all(
-    items.map(item => item.thumb_url ? fetchImageBase64(item.thumb_url) : Promise.resolve(null))
+    items.map(item => fetchImageBase64(item.thumb_url || item.image_url))
   );
 
-  // Step 1: identify items from images
-  const identifications = await identifyItems(items, imageData);
+  // STEP 1 — classify only (no prices)
+  const tags = await classifyItems(items, imageData);
 
-  // Step 2: web search retail prices sequentially to stay within rate limits
-  const retailPrices = new Array(identifications.length).fill(null);
+  // STEP 2/3 — route each item, run comp searches sequentially (rate limits)
+  const comps = new Array(tags.length).fill(null);
+  const toSearch = tags
+    .map((tag, i) => ({ tag, i }))
+    .filter(({ tag }) => tag && shouldSearch(tag));
 
-  const searchTasks = identifications
-    .map((id, i) => ({ id, i }))
-    .filter(({ id }) => id?.confidence === 'high' && id?.brand && id?.model)
-    .slice(0, 5); // Max 5 web searches per batch of 10 items to control costs
-
-  for (const { id, i: idx } of searchTasks) {
-    const searched = await searchRetailPrice(id.brand, id.model);
-    retailPrices[idx] = searched || id?.retailPrice || null;
-    await new Promise(r => setTimeout(r, 5000));
+  for (const { tag, i } of toSearch) {
+    comps[i] = await searchComps(tag);
+    await new Promise(r => setTimeout(r, 4000));
   }
 
-  // Fill in non-searched items with AI estimates
-  identifications.forEach((id, i) => {
-    if (retailPrices[i] === null) retailPrices[i] = id?.retailPrice || null;
-  });
-
-  // Step 3: calculate FB resell value using verified retail prices
-  const results = identifications.map((id, i) => {
-    if (!id) return null;
+  // Build final results
+  const results = tags.map((tag, i) => {
+    if (!tag) return null;
     const item = items[i];
-    const retail = retailPrices[i] || id.retailPrice || 0;
-    const condition = id.condition || 'unknown';
 
-    let pct = 0.30; // default used
-    if (condition.includes('sealed') || condition.includes('new')) pct = 0.52;
-    else if (condition.includes('like new')) pct = 0.45;
-    else if (condition.includes('good')) pct = 0.35;
-    else if (condition.includes('fair') || condition.includes('poor')) pct = 0.20;
+    let resale = priceFromComps(comps[i], tag);
+    let source = 'comps';
+    if (resale === null || resale <= 0) {
+      resale = priceFromHeuristic(tag);
+      source = 'heuristic';
+    }
 
-    // Category overrides
-    const title = item.title.toLowerCase();
-    if (/grill|traeger|weber|mower|patio/.test(title)) pct = Math.min(pct, 0.28);
-    if (/sofa|couch|sectional|dresser/.test(title)) pct = Math.min(pct, 0.28);
-
-    let resellValue = retail > 0 ? Math.round(retail * pct) : 0;
-
-    // Apply aggressive haircut — protect resellers from AI overestimates
-    if (resellValue > 100) resellValue = Math.floor(resellValue * 0.75);
-    if (resellValue > 300) resellValue = Math.floor(resellValue * 0.65);
-    if (resellValue > 500) resellValue = Math.floor(resellValue * 0.55);
+    const label = [tag.brand, tag.model].filter(Boolean).join(' ') || tag.subtype || tag.category || item.title.slice(0, 50);
+    const compNote = comps[i]
+      ? `${comps[i].isGeneric ? 'generic-comp' : 'branded-comp'} median $${comps[i].median} (${comps[i].count} pts)`
+      : 'no comps';
 
     return {
       lotId: item.lot_number,
-      lotTitle: `${id.brand || ''} ${id.model || ''}`.trim() || item.title.slice(0, 50),
-      totalEstimatedValue: resellValue,
-      condition,
-      lotNotes: `${id.brand || ''} ${id.model || ''} | retail ~$${retail} | ${Math.round(pct*100)}% FB = $${resellValue}`,
+      lotTitle: label,
+      totalEstimatedValue: resale > 0 ? Math.round(resale) : 0,
+      condition: tag.condition || 'unknown',
+      lotNotes: `${label} | ${tag.category}/${tag.sizeClass} | ${compNote} | ${source} = $${Math.round(resale)}`,
     };
   }).filter(Boolean);
 
