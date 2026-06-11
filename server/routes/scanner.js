@@ -398,26 +398,27 @@ async function scanAffiliate(affiliateId) {
           let resellValue = result.totalEstimatedValue;
           if (typeof resellValue === 'string') resellValue = parseFloat(resellValue.replace(/[$,]/g, '')) || 0;
 
-          if (resellValue > 0) {
-            upsertRows.push({
-              lot_number: item.lot_number,
-              affiliate_id: String(affiliateId),
-              auction_id: item.auction_id,
-              auction_title: item.auction_title,
-              title: item.title,
-              image_url: item.thumb_url || null,
-              item_url: item.item_url,
-              item_id: item.id || null,
-              current_bid: parseFloat(item.current_bid) || 0,
-              minimum_bid: parseFloat(item.minimum_bid) || 0,
-              ends_at: item.ends ? parseInt(item.ends) + 7200 : null,
-              resell_value: Math.round(resellValue),
-              condition: result.condition || 'unknown',
-              lot_notes: result.lotNotes || null,
-              analyzed_at: new Date().toISOString(),
-            });
-            totalAnalyzed++;
-          }
+          // Record EVERY analyzed lot — even zero-value ones — so they are never
+          // re-analyzed on subsequent scans. Zero-value lots are stored but filtered
+          // out of user-facing results by the resell_value > 0 query condition.
+          upsertRows.push({
+            lot_number: item.lot_number,
+            affiliate_id: String(affiliateId),
+            auction_id: item.auction_id,
+            auction_title: item.auction_title,
+            title: item.title,
+            image_url: item.thumb_url || null,
+            item_url: item.item_url,
+            item_id: item.id || null,
+            current_bid: parseFloat(item.current_bid) || 0,
+            minimum_bid: parseFloat(item.minimum_bid) || 0,
+            ends_at: item.ends ? parseInt(item.ends) + 7200 : null,
+            resell_value: Math.round(resellValue) || 0,
+            condition: result.condition || 'unknown',
+            lot_notes: result.lotNotes || null,
+            analyzed_at: new Date().toISOString(),
+          });
+          if (resellValue > 0) totalAnalyzed++;
         }
 
         if (upsertRows.length > 0) {
@@ -652,6 +653,7 @@ export async function getItems(req, res) {
       .select('*', { count: 'exact' })
       .eq('affiliate_id', String(affiliateId))
       .gt('ends_at', now)
+      .gt('resell_value', 0)
       .order(orderCol, { ascending });
 
     if (fetchAll) {
@@ -702,6 +704,7 @@ export async function getTopPicks(req, res) {
       .select('*')
       .eq('affiliate_id', String(affiliateId))
       .gt('ends_at', now) // only active lots
+      .gt('resell_value', 0)
       .order('resell_value', { ascending: false })
       .limit(50);
 
