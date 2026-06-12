@@ -5,6 +5,92 @@ import { createClient } from '@supabase/supabase-js';
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
+// ─────────────────────────────────────────────────────────────
+// COST TELEMETRY — track tokens and estimated $ per scan.
+// Haiku 4.5 pricing (update if Anthropic changes rates).
+// ─────────────────────────────────────────────────────────────
+const PRICING = {
+  'claude-haiku-4-5':           { in: 0.80 / 1e6, out: 4.00 / 1e6 },
+  'claude-haiku-4-5-20251001':  { in: 0.80 / 1e6, out: 4.00 / 1e6 },
+};
+const WEB_SEARCH_TOOL_COST = 0.01; // approx per-search tool fee
+
+function makeCostTracker() {
+  return {
+    classifyCalls: 0, classifyInTok: 0, classifyOutTok: 0,
+    searchCalls: 0, searchInTok: 0, searchOutTok: 0, searchCacheHits: 0,
+    imagesFullRes: 0, imagesThumb: 0, imagesFailed: 0,
+    itemsClassified: 0, itemsSearched: 0, itemsHeuristic: 0,
+  };
+}
+
+function logUsage(tracker, model, usage, kind) {
+  if (!usage) return;
+  const inTok = usage.input_tokens || 0;
+  const outTok = usage.output_tokens || 0;
+  if (kind === 'classify') {
+    tracker.classifyCalls++;
+    tracker.classifyInTok += inTok;
+    tracker.classifyOutTok += outTok;
+  } else if (kind === 'search') {
+    tracker.searchCalls++;
+    tracker.searchInTok += inTok;
+    tracker.searchOutTok += outTok;
+  }
+}
+
+function estCost(tracker) {
+  const c = PRICING['claude-haiku-4-5'];
+  const classify = tracker.classifyInTok * c.in + tracker.classifyOutTok * c.out;
+  const searchTok = tracker.searchInTok * c.in + tracker.searchOutTok * c.out;
+  const searchTool = tracker.searchCalls * WEB_SEARCH_TOOL_COST;
+  return {
+    classify,
+    search: searchTok + searchTool,
+    searchTokens: searchTok,
+    searchTool,
+    total: classify + searchTok + searchTool,
+  };
+}
+
+function printCostReport(tracker, affiliateId, newCount) {
+  const cost = estCost(tracker);
+  const pct = (n) => cost.total > 0 ? ((n / cost.total) * 100).toFixed(0) : '0';
+  console.log(`
+╔══════════════════════════════════════════════════════════════
+║ COST REPORT — affiliate ${affiliateId}
+╠══════════════════════════════════════════════════════════════
+║ Items: ${newCount} new analyzed
+║   classified:        ${tracker.itemsClassified}
+║   comp-searched:     ${tracker.itemsSearched}
+║   heuristic-priced:  ${tracker.itemsHeuristic}
+║
+║ Images:
+║   full-res fetched:  ${tracker.imagesFullRes}
+║   thumbnail only:    ${tracker.imagesThumb}
+║   failed:            ${tracker.imagesFailed}
+║
+║ CLASSIFY (vision):
+║   calls:             ${tracker.classifyCalls}
+║   input tokens:      ${tracker.classifyInTok.toLocaleString()}
+║   output tokens:     ${tracker.classifyOutTok.toLocaleString()}
+║   cost:              $${cost.classify.toFixed(4)}  (${pct(cost.classify)}%)
+║
+║ WEB SEARCH (comps):
+║   calls:             ${tracker.searchCalls}
+║   cache hits saved:  ${tracker.searchCacheHits}
+║   input tokens:      ${tracker.searchInTok.toLocaleString()}
+║   output tokens:     ${tracker.searchOutTok.toLocaleString()}
+║   token cost:        $${cost.searchTokens.toFixed(4)}
+║   tool fee:          $${cost.searchTool.toFixed(4)}
+║   cost:              $${cost.search.toFixed(4)}  (${pct(cost.search)}%)
+║
+║ ─────────────────────────────────────────
+║ TOTAL EST COST:      $${cost.total.toFixed(4)}
+║ avg per new item:    $${newCount > 0 ? (cost.total / newCount).toFixed(4) : '0'}
+╚══════════════════════════════════════════════════════════════`);
+}
+
 const BIDRL_HEADERS = {
   'Content-Type': 'application/x-www-form-urlencoded',
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
@@ -52,6 +138,7 @@ function toFullResUrl(url) {
 }
 
 // Fetch image as base64 — tries full-res first, falls back to thumbnail
+// Returns { base64, mediaType, res: 'full'|'thumb' } or null
 async function fetchImageBase64(url) {
   const tryFetch = async (u) => {
     try {
@@ -68,16 +155,17 @@ async function fetchImageBase64(url) {
   const fullRes = toFullResUrl(url);
   if (fullRes && fullRes !== url) {
     const full = await tryFetch(fullRes);
-    if (full) return full;
+    if (full) return { ...full, res: 'full' };
   }
-  return tryFetch(url);
+  const thumb = await tryFetch(url);
+  return thumb ? { ...thumb, res: 'thumb' } : null;
 }
 
 // ─────────────────────────────────────────────────────────────
 // STEP 1 — CLASSIFIER (no pricing). Extract structured tags only.
 // AI is used here purely to identify and label, never to value.
 // ─────────────────────────────────────────────────────────────
-async function classifyItems(items, imageData) {
+async function classifyItems(items, imageData, tracker) {
   const lotsText = items.map(item => {
     const cleanTitle = item.title.replace(/[-–—]?\s*retail\s*\$?[\d,]+(\.\d+)?/gi, '').trim();
     const auctionHint = item.auction_title ? ` [Auction: ${item.auction_title.slice(0, 60)}]` : '';
@@ -126,6 +214,7 @@ brand/model may be null if genuinely not identifiable. sizeClass: small|medium|l
     max_tokens: Math.min(120 * items.length + 200, 4096),
     messages: [{ role: 'user', content: contentBlocks }],
   });
+  if (tracker) logUsage(tracker, 'claude-haiku-4-5', message.usage, 'classify');
 
   let rawText = message.content[0].text.replace(/```json|```/g, '').trim();
   try { return JSON.parse(rawText); }
@@ -154,11 +243,12 @@ function buildSearchQuery(tag) {
   return parts.join(' ').trim();
 }
 
-async function searchComps(tag) {
+async function searchComps(tag, tracker) {
   const queryBase = buildSearchQuery(tag);
   if (!queryBase) return null;
   const key = queryBase.toLowerCase();
   if (searchCache.has(key)) {
+    if (tracker) tracker.searchCacheHits++;
     return searchCache.get(key);
   }
 
@@ -174,6 +264,7 @@ async function searchComps(tag) {
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
       messages: [{ role: 'user', content: prompt }],
     });
+    if (tracker) logUsage(tracker, 'claude-haiku-4-5-20251001', resp.usage, 'search');
 
     const allText = resp.content
       .map(b => {
@@ -280,13 +371,23 @@ function priceFromHeuristic(tag) {
   return Math.round(anchor * factor);
 }
 
-async function analyzeBatchWithVision(items) {
+async function analyzeBatchWithVision(items, tracker) {
   const imageData = await Promise.all(
     items.map(item => fetchImageBase64(item.thumb_url || item.image_url))
   );
 
+  // Track image resolution outcomes
+  if (tracker) {
+    for (const img of imageData) {
+      if (!img) tracker.imagesFailed++;
+      else if (img.res === 'full') tracker.imagesFullRes++;
+      else tracker.imagesThumb++;
+    }
+  }
+
   // STEP 1 — classify only (no prices)
-  const tags = await classifyItems(items, imageData);
+  const tags = await classifyItems(items, imageData, tracker);
+  if (tracker) tracker.itemsClassified += tags.filter(Boolean).length;
 
   // STEP 2/3 — route each item, run comp searches sequentially (rate limits)
   const comps = new Array(tags.length).fill(null);
@@ -295,9 +396,10 @@ async function analyzeBatchWithVision(items) {
     .filter(({ tag }) => tag && shouldSearch(tag));
 
   for (const { tag, i } of toSearch) {
-    comps[i] = await searchComps(tag);
+    comps[i] = await searchComps(tag, tracker);
     await new Promise(r => setTimeout(r, 4000));
   }
+  if (tracker) tracker.itemsSearched += toSearch.length;
 
   // Build final results
   const results = tags.map((tag, i) => {
@@ -309,6 +411,7 @@ async function analyzeBatchWithVision(items) {
     if (resale === null || resale <= 0) {
       resale = priceFromHeuristic(tag);
       source = 'heuristic';
+      if (tracker) tracker.itemsHeuristic++;
     }
 
     const label = [tag.brand, tag.model].filter(Boolean).join(' ') || tag.subtype || tag.category || item.title.slice(0, 50);
@@ -329,8 +432,8 @@ async function analyzeBatchWithVision(items) {
 }
 
 // Main scan function for one affiliate
-async function scanAffiliate(affiliateId) {
-  console.log(`[Scan] Starting affiliate ${affiliateId}`);
+async function scanAffiliate(affiliateId, maxItems = null) {
+  console.log(`[Scan] Starting affiliate ${affiliateId}${maxItems ? ` (limited to ${maxItems} new items)` : ''}`);
 
   // Clean up expired lots first
   const now = Math.floor(Date.now() / 1000);
@@ -359,8 +462,14 @@ async function scanAffiliate(affiliateId) {
     const existingMap = new Map((existing || []).map(r => [r.lot_number, r]));
 
     // Split into new items (need full analysis) and existing (just update bid)
-    const newItems = allItems.filter(i => !existingMap.has(i.lot_number));
+    let newItems = allItems.filter(i => !existingMap.has(i.lot_number));
     const existingItems = allItems.filter(i => existingMap.has(i.lot_number));
+
+    // Dev safety: cap how many new items get analyzed in one run
+    if (maxItems && newItems.length > maxItems) {
+      console.log(`[Scan] Limiting ${newItems.length} new items to ${maxItems} (dev mode)`);
+      newItems = newItems.slice(0, maxItems);
+    }
 
     console.log(`[Scan] ${newItems.length} new items to analyze, ${existingItems.length} existing (bid refresh only)`);
 
@@ -384,13 +493,14 @@ async function scanAffiliate(affiliateId) {
     // Full vision + web search analysis for new items only
     const BATCH_SIZE = 10;
     let totalAnalyzed = 0;
+    const tracker = makeCostTracker();
 
     for (let i = 0; i < newItems.length; i += BATCH_SIZE) {
       const batch = newItems.slice(i, i + BATCH_SIZE);
       console.log(`[Scan] Analyzing batch ${Math.floor(i/BATCH_SIZE)+1}/${Math.ceil(newItems.length/BATCH_SIZE)}`);
 
       try {
-        const results = await analyzeBatchWithVision(batch);
+        const results = await analyzeBatchWithVision(batch, tracker);
 
         const upsertRows = [];
         for (const [j, item] of batch.entries()) {
@@ -440,6 +550,7 @@ async function scanAffiliate(affiliateId) {
     }).eq('id', scanLog.id);
 
     console.log(`[Scan] Done: ${totalAnalyzed} new, ${existingItems.length} bid-refreshed`);
+    if (newItems.length > 0) printCostReport(tracker, affiliateId, newItems.length);
   } catch(e) {
     console.error(`[Scan] Failed:`, e.message);
     await supabase.from('scan_log').update({ status: 'failed' }).eq('id', scanLog.id);
@@ -472,8 +583,8 @@ export async function refreshBidsForAffiliate(affiliateId) {
 }
 
 // Scan a single affiliate (called by cron)
-export async function runScanForAffiliate(affiliateId) {
-  await scanAffiliate(affiliateId);
+export async function runScanForAffiliate(affiliateId, maxItems = null) {
+  await scanAffiliate(affiliateId, maxItems);
 }
 
 // Scan all affiliates (manual trigger)
