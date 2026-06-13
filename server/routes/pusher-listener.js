@@ -8,12 +8,6 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const BIDRL_PUSHER_KEY = '8a9aa527c32e9ca02b0f';
 const BIDRL_PUSHER_CLUSTER = 'us3';
 
-// Pusher limits channels-per-connection. Subscribe in throttled chunks and
-// prioritize items ending soonest so the most relevant lots stay live.
-const SUBSCRIBE_CHUNK = 50;          // channels per batch
-const SUBSCRIBE_CHUNK_DELAY = 500;   // ms between batches
-const MAX_CHANNELS = 400;            // hard ceiling per connection
-
 let pusherClient = null;
 let subscribedChannels = new Map(); // itemId -> channel
 let syncInterval = null;
@@ -59,41 +53,32 @@ function unsubscribeFromItem(itemId) {
   subscribedChannels.delete(itemId);
 }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
 async function syncSubscriptions() {
   if (!pusherClient || pusherClient.connection.state !== 'connected') return;
-  if (syncing) return; // prevent overlapping syncs
+  if (syncing) return; // prevent overlapping syncs from stacking
   syncing = true;
   try {
     const now = Math.floor(Date.now() / 1000);
-    // Order by soonest-ending so the most time-sensitive lots are covered first.
     const { data: activeItems } = await supabase
       .from('analyzed_lots')
       .select('item_id, lot_number, ends_at')
       .not('item_id', 'is', null)
-      .gt('ends_at', now)
-      .order('ends_at', { ascending: true })
-      .limit(MAX_CHANNELS);
+      .gt('ends_at', now);
 
     const wanted = (activeItems || []);
     const activeItemIds = new Set(wanted.map(i => i.item_id));
 
-    // Unsubscribe from items no longer active / outside the window
+    // Unsubscribe from items no longer active
     for (const [itemId] of subscribedChannels) {
       if (!activeItemIds.has(itemId)) unsubscribeFromItem(itemId);
     }
-
-    // Subscribe to new items in throttled chunks to avoid overwhelming Pusher
-    const toAdd = wanted.filter(i => !subscribedChannels.has(i.item_id));
-    for (let i = 0; i < toAdd.length; i += SUBSCRIBE_CHUNK) {
-      if (pusherClient.connection.state !== 'connected') break;
-      const chunk = toAdd.slice(i, i + SUBSCRIBE_CHUNK);
-      for (const item of chunk) subscribeToItem(item.item_id, item.lot_number);
-      if (i + SUBSCRIBE_CHUNK < toAdd.length) await sleep(SUBSCRIBE_CHUNK_DELAY);
+    // Subscribe to all active items (no cap — matches prior working behavior)
+    for (const item of wanted) {
+      if (!subscribedChannels.has(item.item_id)) {
+        subscribeToItem(item.item_id, item.lot_number);
+      }
     }
-
-    console.log(`[Pusher] Active subscriptions: ${subscribedChannels.size} (wanted ${wanted.length}, added ${toAdd.length})`);
+    console.log(`[Pusher] Subscribed to ${subscribedChannels.size} item channels`);
   } catch (e) {
     console.error('[Pusher] syncSubscriptions error:', e.message);
   } finally {
@@ -102,6 +87,9 @@ async function syncSubscriptions() {
 }
 
 export async function startPusherListener() {
+  // Guard: create the client, handlers, and interval exactly once per process.
+  // Let pusher-js manage its own reconnection — do NOT tear down/rebuild on
+  // disconnect, which is what caused the old reconnect loop.
   if (started) {
     console.log('[Pusher] Listener already started — ignoring duplicate call');
     return;
@@ -111,8 +99,6 @@ export async function startPusherListener() {
   pusherClient = new Pusher(BIDRL_PUSHER_KEY, {
     cluster: BIDRL_PUSHER_CLUSTER,
     forceTLS: true,
-    activityTimeout: 120000,
-    pongTimeout: 30000,
   });
 
   pusherClient.connection.bind('connected', () => {
@@ -133,6 +119,7 @@ export async function startPusherListener() {
     console.log(`[Pusher] State: ${states.previous} -> ${states.current}`);
   });
 
+  // Single re-sync interval, created exactly once — reconciles new/ended items.
   if (!syncInterval) {
     syncInterval = setInterval(syncSubscriptions, 15 * 60 * 1000);
   }
