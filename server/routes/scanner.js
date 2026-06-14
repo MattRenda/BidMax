@@ -195,8 +195,9 @@ electronics, appliance_large, appliance_small, furniture, tools, sporting_goods,
 ${lotsText}
 
 Return ONLY a JSON array, one entry per lot, same order. NO prices:
-[{"lotId":"RD1234","category":"outdoor","subtype":"rectangular frame pool","brand":"Intex","model":"14ft x 8ft x 3ft","sizeClass":"large","keywords":["pool","frame","14ft"],"condition":"new","idConfidence":"high"}]
+[{"lotId":"RD1234","category":"outdoor","subtype":"rectangular frame pool","brand":"Intex","model":"14ft x 8ft x 3ft","sizeClass":"large","keywords":["pool","frame","14ft"],"condition":"new","valueTier":"high","idConfidence":"high"}]
 
+valueTier: a COARSE judgment of typical resale value, NOT a price — "low" (under ~$40, e.g. phone case, small toy, single book), "mid" (~$40-150, e.g. small appliance, power tool), "high" (over ~$150, e.g. furniture, pool, large appliance, premium electronics).
 idConfidence: high = brand+model clearly identified; medium = category+subtype clear, brand uncertain; low = generic/unclear.
 brand/model may be null if genuinely not identifiable. sizeClass: small|medium|large.`
   }];
@@ -232,7 +233,45 @@ brand/model may be null if genuinely not identifiable. sizeClass: small|medium|l
 // For branded items: search the product. For generic high-value
 // items: search the category + size + "used sold price".
 // ─────────────────────────────────────────────────────────────
+// In-memory cache (fast, within a single run) layered over a persistent
+// DB cache (survives restarts/deploys). Results are reused for CACHE_TTL_DAYS
+// so the same product is never web-searched twice within the window — even if
+// the server redeploys mid-auction. This is the primary cost control.
 const searchCache = new Map();
+const CACHE_TTL_DAYS = 7;
+
+async function readPersistentCache(key) {
+  try {
+    const { data } = await supabase
+      .from('comp_cache')
+      .select('median, is_generic, data_points, updated_at')
+      .eq('query_key', key)
+      .maybeSingle();
+    if (!data) return undefined; // not cached
+    // Check freshness
+    const ageMs = Date.now() - new Date(data.updated_at).getTime();
+    if (ageMs > CACHE_TTL_DAYS * 86400000) return undefined; // stale → re-search
+    // Cached "no result" is stored as median null
+    if (data.median === null) return null;
+    return { median: data.median, isGeneric: data.is_generic, count: data.data_points };
+  } catch {
+    return undefined; // on any error, treat as cache miss
+  }
+}
+
+async function writePersistentCache(key, result) {
+  try {
+    await supabase.from('comp_cache').upsert({
+      query_key: key,
+      median: result ? result.median : null,
+      is_generic: result ? result.isGeneric : false,
+      data_points: result ? result.count : 0,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'query_key' });
+  } catch (e) {
+    console.error('[Scan] comp_cache write error:', e.message);
+  }
+}
 
 function buildSearchQuery(tag) {
   const brand = tag.brand || '';
@@ -247,9 +286,19 @@ async function searchComps(tag, tracker) {
   const queryBase = buildSearchQuery(tag);
   if (!queryBase) return null;
   const key = queryBase.toLowerCase();
+
+  // Layer 1: in-memory cache (this run)
   if (searchCache.has(key)) {
     if (tracker) tracker.searchCacheHits++;
     return searchCache.get(key);
+  }
+
+  // Layer 2: persistent DB cache (survives restarts/deploys)
+  const persisted = await readPersistentCache(key);
+  if (persisted !== undefined) {
+    if (tracker) tracker.searchCacheHits++;
+    searchCache.set(key, persisted); // promote into in-memory layer
+    return persisted;
   }
 
   const isGeneric = !(tag.brand && tag.model);
@@ -281,7 +330,11 @@ async function searchComps(tag, tracker) {
       .map(m => parseFloat(m[1].replace(/,/g, '')))
       .filter(p => p > 3 && p < 15000);
 
-    if (prices.length === 0) { searchCache.set(key, null); return null; }
+    if (prices.length === 0) {
+      searchCache.set(key, null);
+      await writePersistentCache(key, null); // remember the miss so we don't re-search
+      return null;
+    }
 
     prices.sort((a, b) => a - b);
     // Trim outliers: drop top and bottom 10% when we have enough points
@@ -298,6 +351,7 @@ async function searchComps(tag, tracker) {
     const result = { median: Math.round(median), isGeneric, count: prices.length };
     console.log(`[Scan] Comps "${queryBase}" → $${result.median} (${prices.length} pts: ${prices.slice(0,6).join(', ')})`);
     searchCache.set(key, result);
+    await writePersistentCache(key, result);
     return result;
   } catch (e) {
     console.error('[Scan] Comp search error:', e.message);
@@ -326,8 +380,8 @@ const SIZE_MULT = { small: 0.7, medium: 1.0, large: 1.8 };
 
 // Decide whether an item is worth a (paid) comp search.
 function shouldSearch(tag) {
+  // Low-confidence generic: only worth it in high-variance high-value categories
   if (tag.idConfidence === 'low' && !(tag.brand && tag.model)) {
-    // only search low-confidence if it's a known high-variance high-value category
     return ['furniture', 'gym_equipment', 'appliance_large', 'outdoor'].includes(tag.category);
   }
   // branded → always worth verifying
