@@ -20,7 +20,7 @@ function makeCostTracker() {
     classifyCalls: 0, classifyInTok: 0, classifyOutTok: 0,
     searchCalls: 0, searchInTok: 0, searchOutTok: 0, searchCacheHits: 0,
     imagesFullRes: 0, imagesThumb: 0, imagesFailed: 0,
-    itemsClassified: 0, itemsSearched: 0, itemsHeuristic: 0,
+    itemsClassified: 0, itemsSearched: 0, itemsHeuristic: 0, itemsAiPriced: 0,
   };
 }
 
@@ -63,6 +63,7 @@ function printCostReport(tracker, affiliateId, newCount) {
 ║ Items: ${newCount} new analyzed
 ║   classified:        ${tracker.itemsClassified}
 ║   comp-searched:     ${tracker.itemsSearched}
+║   AI-priced (no search): ${tracker.itemsAiPriced}
 ║   heuristic-priced:  ${tracker.itemsHeuristic}
 ║
 ║ Images:
@@ -194,10 +195,11 @@ electronics, appliance_large, appliance_small, furniture, tools, sporting_goods,
 
 ${lotsText}
 
-Return ONLY a JSON array, one entry per lot, same order. NO prices:
-[{"lotId":"RD1234","category":"outdoor","subtype":"rectangular frame pool","brand":"Intex","model":"14ft x 8ft x 3ft","sizeClass":"large","keywords":["pool","frame","14ft"],"condition":"new","valueTier":"high","idConfidence":"high"}]
+Return ONLY a JSON array, one entry per lot, same order:
+[{"lotId":"RD1234","category":"outdoor","subtype":"rectangular frame pool","brand":"Intex","model":"14ft x 8ft x 3ft","sizeClass":"large","keywords":["pool","frame","14ft"],"condition":"new","estResale":230,"priceConfidence":"high","idConfidence":"high"}]
 
-valueTier: a COARSE judgment of typical resale value, NOT a price — "low" (under ~$40, e.g. phone case, small toy, single book), "mid" (~$40-150, e.g. small appliance, power tool), "high" (over ~$150, e.g. furniture, pool, large appliance, premium electronics).
+estResale: your best estimate of the item's USED resale value in dollars on Facebook Marketplace, given its condition. A whole number.
+priceConfidence: how sure you are of estResale. Be honest and conservative — only use "high" when you genuinely know what this item sells for. "high" = either a clearly-identified product whose resale value you know well (known brand+model), OR a generic item in a category with a tight, predictable used price (e.g. a standard 6-drawer dresser). "medium" = recognizable but value varies a lot by model/spec you can't fully pin down. "low" = you are essentially guessing. If you cannot tell exactly what the item is AND its category price varies widely, you must use "low" — do not claim high price confidence for an item you can't identify.
 idConfidence: high = brand+model clearly identified; medium = category+subtype clear, brand uncertain; low = generic/unclear.
 brand/model may be null if genuinely not identifiable. sizeClass: small|medium|large.`
   }];
@@ -378,19 +380,32 @@ const CATEGORY_RETAIL_ANCHOR = {
 };
 const SIZE_MULT = { small: 0.7, medium: 1.0, large: 1.8 };
 
-// Decide whether an item is worth a (paid) comp search.
+// Only spend a web search when the AI's price estimate is NOT trustworthy.
+// Trust (and skip the search) ONLY when the model is confident about BOTH:
+//   (a) what the item IS (idConfidence), and
+//   (b) what it's WORTH (priceConfidence).
+// If either is shaky, the price estimate isn't reliable, so we verify with a
+// search — provided the item is worth enough that being wrong matters.
 function shouldSearch(tag) {
-  // Low-confidence generic: only worth it in high-variance high-value categories
-  if (tag.idConfidence === 'low' && !(tag.brand && tag.model)) {
-    return ['furniture', 'gym_equipment', 'appliance_large', 'outdoor'].includes(tag.category);
-  }
-  // branded → always worth verifying
-  if (tag.brand && tag.model) return true;
-  // generic but high-value category → worth a category comp search
-  if (['furniture', 'gym_equipment', 'appliance_large', 'outdoor', 'electronics'].includes(tag.category)) return true;
-  // estimate a rough anchor; search if it clears $100
-  const anchor = (CATEGORY_RETAIL_ANCHOR[tag.category] || 50) * (SIZE_MULT[tag.sizeClass] || 1);
-  return anchor >= 100;
+  if (!tag) return false;
+  const est = Number(tag.estResale) || 0;
+
+  const idSure    = tag.idConfidence === 'high';
+  const priceSure = tag.priceConfidence === 'high';
+
+  // Confident on BOTH → trust the AI estimate, no search needed.
+  if (idSure && priceSure) return false;
+
+  // Otherwise the estimate is uncertain. Only pay to verify if the item is
+  // worth enough to matter. Use the AI estimate if present; if the model
+  // couldn't even estimate (est 0/unknown), fall back to a category anchor so
+  // a genuinely unidentified-but-bulky item (furniture, appliance) still gets
+  // verified rather than skipped on a missing number.
+  const valueProxy = est > 0
+    ? est
+    : (CATEGORY_RETAIL_ANCHOR[tag.category] || 50) * (SIZE_MULT[tag.sizeClass] || 1);
+
+  return valueProxy >= 60;
 }
 
 // Convert a comp result + condition into a final FB resale number.
@@ -455,7 +470,10 @@ async function analyzeBatchWithVision(items, tracker) {
   }
   if (tracker) tracker.itemsSearched += toSearch.length;
 
-  // Build final results
+  // Build final results.
+  // Pricing priority: (1) comps if we searched, (2) the AI's own resale estimate
+  // when it was confident enough that we skipped the search, (3) crude category
+  // heuristic only as a last resort for items with no estimate at all.
   const results = tags.map((tag, i) => {
     if (!tag) return null;
     const item = items[i];
@@ -463,15 +481,22 @@ async function analyzeBatchWithVision(items, tracker) {
     let resale = priceFromComps(comps[i], tag);
     let source = 'comps';
     if (resale === null || resale <= 0) {
-      resale = priceFromHeuristic(tag);
-      source = 'heuristic';
-      if (tracker) tracker.itemsHeuristic++;
+      const aiEst = Number(tag.estResale) || 0;
+      if (aiEst > 0) {
+        resale = aiEst;
+        source = `ai-${tag.priceConfidence || 'est'}`;
+        if (tracker) tracker.itemsAiPriced = (tracker.itemsAiPriced || 0) + 1;
+      } else {
+        resale = priceFromHeuristic(tag);
+        source = 'heuristic';
+        if (tracker) tracker.itemsHeuristic++;
+      }
     }
 
     const label = [tag.brand, tag.model].filter(Boolean).join(' ') || tag.subtype || tag.category || item.title.slice(0, 50);
     const compNote = comps[i]
       ? `${comps[i].isGeneric ? 'generic-comp' : 'branded-comp'} median $${comps[i].median} (${comps[i].count} pts)`
-      : 'no comps';
+      : (source.startsWith('ai') ? 'AI price (no search needed)' : 'no comps');
 
     return {
       lotId: item.lot_number,
