@@ -19,20 +19,28 @@ async function handleBidEvent(lotNumber, data) {
     const item = typeof data === 'string' ? JSON.parse(data) : data;
     const bidData = item.item || item;
 
-    const update = {
-      current_bid: parseFloat(bidData.current_bid) || 0,
-      minimum_bid: parseFloat(bidData.minimum_bid) || 0,
-      ends_at: bidData.end_time ? parseInt(bidData.end_time) + (2 * 3600) : undefined,
-    };
-    Object.keys(update).forEach(k => update[k] === undefined && delete update[k]);
+    const newBid = parseFloat(bidData.current_bid) || 0;
+    const newMin = parseFloat(bidData.minimum_bid) || 0;
+    const endsAt = bidData.end_time ? parseInt(bidData.end_time) + (2 * 3600) : undefined;
 
-    const { error } = await supabase
-      .from('analyzed_lots')
-      .update(update)
-      .eq('lot_number', lotNumber);
+    // Bids only ever increase. Guard the bid update to only RAISE the value so
+    // out-of-order event delivery (possible after a reconnect) can't write a
+    // stale lower bid over a newer one. Consistent with the scan's bid-refresh.
+    if (newBid > 0) {
+      const { error } = await supabase
+        .from('analyzed_lots')
+        .update({ current_bid: newBid, minimum_bid: newMin })
+        .eq('lot_number', lotNumber)
+        .lt('current_bid', newBid);
+      if (!error) console.log(`[Pusher] Bid update: ${lotNumber} -> $${newBid}`);
+    }
 
-    if (!error) {
-      console.log(`[Pusher] Bid update: ${lotNumber} -> $${update.current_bid}`);
+    // End time can change (auction extensions) — safe to refresh unconditionally.
+    if (endsAt !== undefined) {
+      await supabase
+        .from('analyzed_lots')
+        .update({ ends_at: endsAt })
+        .eq('lot_number', lotNumber);
     }
   } catch (e) {
     console.error('[Pusher] handleBidEvent error:', e.message);
