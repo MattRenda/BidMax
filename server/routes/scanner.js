@@ -511,17 +511,35 @@ async function analyzeBatchWithVision(items, tracker) {
 }
 
 // Main scan function for one affiliate
+// Concurrency guard — prevents two overlapping scans of the same affiliate
+// (e.g. if a cron fires while a previous slow scan is still running, or two
+// processes briefly coexist during a deploy). Without this, overlapping scans
+// double the work and can re-analyze the same items.
+const scansInProgress = new Set();
+
 async function scanAffiliate(affiliateId, maxItems = null) {
+  const affKey = String(affiliateId);
+  if (scansInProgress.has(affKey)) {
+    console.log(`[Scan] Affiliate ${affKey} scan already in progress — skipping this run`);
+    return;
+  }
+  scansInProgress.add(affKey);
   console.log(`[Scan] Starting affiliate ${affiliateId}${maxItems ? ` (limited to ${maxItems} new items)` : ''}`);
 
-  // Clean up expired lots first
+  try {
+  // Only delete lots that ended MORE THAN 7 DAYS AGO. Keeping recently-ended
+  // lots means an item that disappears and reappears across auctions stays in
+  // the DB and is NOT re-analyzed (and not re-billed). Expired lots are already
+  // hidden from users by the ends_at filter on read queries, so keeping them
+  // costs nothing but storage while preventing expensive re-analysis churn.
   const now = Math.floor(Date.now() / 1000);
+  const sevenDaysAgo = now - (7 * 86400);
   const { error: cleanupError } = await supabase
     .from('analyzed_lots')
     .delete()
     .eq('affiliate_id', String(affiliateId))
-    .lt('ends_at', now);
-  if (!cleanupError) console.log(`[Scan] Cleaned up ended lots`);
+    .lt('ends_at', sevenDaysAgo);
+  if (!cleanupError) console.log(`[Scan] Cleaned up lots ended >7 days ago`);
 
   const { data: scanLog } = await supabase
     .from('scan_log')
@@ -544,25 +562,50 @@ async function scanAffiliate(affiliateId, maxItems = null) {
     let newItems = allItems.filter(i => !existingMap.has(i.lot_number));
     const existingItems = allItems.filter(i => existingMap.has(i.lot_number));
 
-    // Dev safety: cap how many new items get analyzed in one run
+    // Cap how many new items get analyzed in one run (throttle cost / drain
+    // backlog gradually). Prioritize soonest-ending lots so the most
+    // time-sensitive auctions get analyzed first; the rest stay "new" and are
+    // picked up on subsequent scans.
     if (maxItems && newItems.length > maxItems) {
-      console.log(`[Scan] Limiting ${newItems.length} new items to ${maxItems} (dev mode)`);
+      newItems.sort((a, b) => {
+        const ea = parseInt(a.ends) || Infinity;
+        const eb = parseInt(b.ends) || Infinity;
+        return ea - eb; // soonest-ending first
+      });
+      console.log(`[Scan] Capping ${newItems.length} new items to ${maxItems} (soonest-ending first; rest deferred to next scan)`);
       newItems = newItems.slice(0, maxItems);
     }
 
     console.log(`[Scan] ${newItems.length} new items to analyze, ${existingItems.length} existing (bid refresh only)`);
 
-    // Update bids for existing items — only update bid columns, don't insert
+    // Update bids for existing items — only update bid columns, don't insert.
+    // IMPORTANT: a scan's fetched bid is a snapshot from the START of the scan
+    // and may be STALE relative to a fresher value Pusher already wrote. BidRL
+    // bids only ever increase, so we guard each update to only RAISE the bid
+    // (current_bid < new). This prevents a slow scan from clobbering a newer
+    // Pusher bid with an older, lower one. ends_at/item_id are safe to refresh
+    // unconditionally and are handled in a separate update.
     if (existingItems.length > 0) {
       for (const item of existingItems) {
+        const newBid = parseFloat(item.current_bid) || 0;
+        const newMin = parseFloat(item.minimum_bid) || 0;
+        const endsAt = item.ends ? parseInt(item.ends) + 7200 : null;
+
+        // 1) Raise the bid only if our fetched value is higher than what's stored
+        //    (Pusher may have written a fresher/higher value already).
+        if (newBid > 0) {
+          await supabase
+            .from('analyzed_lots')
+            .update({ current_bid: newBid, minimum_bid: newMin })
+            .eq('lot_number', item.lot_number)
+            .eq('affiliate_id', String(affiliateId))
+            .lt('current_bid', newBid); // only if stored bid is LOWER → never lower a bid
+        }
+
+        // 2) Always refresh non-bid metadata (end time, item id) — safe to overwrite.
         await supabase
           .from('analyzed_lots')
-          .update({
-            current_bid: parseFloat(item.current_bid) || 0,
-            minimum_bid: parseFloat(item.minimum_bid) || 0,
-            ends_at: item.ends ? parseInt(item.ends) + 7200 : null,
-            item_id: item.id || null,
-          })
+          .update({ ends_at: endsAt, item_id: item.id || null })
           .eq('lot_number', item.lot_number)
           .eq('affiliate_id', String(affiliateId));
       }
@@ -632,7 +675,12 @@ async function scanAffiliate(affiliateId, maxItems = null) {
     if (newItems.length > 0) printCostReport(tracker, affiliateId, newItems.length);
   } catch(e) {
     console.error(`[Scan] Failed:`, e.message);
-    await supabase.from('scan_log').update({ status: 'failed' }).eq('id', scanLog.id);
+    if (scanLog?.id) await supabase.from('scan_log').update({ status: 'failed' }).eq('id', scanLog.id);
+  }
+
+  } finally {
+    // Always release the scan lock, even on error
+    scansInProgress.delete(affKey);
   }
 }
 
@@ -643,14 +691,24 @@ export async function refreshBidsForAffiliate(affiliateId) {
   try {
     const allItems = await fetchAllItems(affiliateId);
 
-    // Update bid for each item individually — no insert
+    // Update bid for each item — only RAISE the bid, never lower it, so a stale
+    // fetch can't clobber a fresher Pusher value (BidRL bids only increase).
     for (const item of allItems) {
+      const newBid = parseFloat(item.current_bid) || 0;
+      const endsAt = item.ends ? parseInt(item.ends) + 7200 : null;
+
+      if (newBid > 0) {
+        await supabase
+          .from('analyzed_lots')
+          .update({ current_bid: newBid })
+          .eq('lot_number', item.lot_number)
+          .eq('affiliate_id', String(affiliateId))
+          .lt('current_bid', newBid);
+      }
+      // end time is safe to refresh unconditionally
       await supabase
         .from('analyzed_lots')
-        .update({
-          current_bid: parseFloat(item.current_bid) || 0,
-          ends_at: item.ends ? parseInt(item.ends) + 7200 : null,
-        })
+        .update({ ends_at: endsAt })
         .eq('lot_number', item.lot_number)
         .eq('affiliate_id', String(affiliateId));
     }
