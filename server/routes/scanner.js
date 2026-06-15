@@ -380,32 +380,36 @@ const CATEGORY_RETAIL_ANCHOR = {
 };
 const SIZE_MULT = { small: 0.7, medium: 1.0, large: 1.8 };
 
-// Only spend a web search when the AI's price estimate is NOT trustworthy.
-// Trust (and skip the search) ONLY when the model is confident about BOTH:
-//   (a) what the item IS (idConfidence), and
-//   (b) what it's WORTH (priceConfidence).
-// If either is shaky, the price estimate isn't reliable, so we verify with a
-// search — provided the item is worth enough that being wrong matters.
+// Decide whether an item is worth a (paid) comp search.
+// We trust the AI's own price estimate ONLY when:
+//   - it's confident about BOTH identity and price, AND
+//   - the item is clearly branded (brand+model known), AND
+//   - the estimate is low enough that an over-valuation can't cause a bad bid.
+// Evidence showed the AI anchors toward NEW RETAIL for mid-range tools/appliances
+// and badly over-values generic large items (a $60 fan estimated at $347). So we
+// verify with a search whenever the stakes (value) or ambiguity (generic) are high.
+const AI_TRUST_CEILING = 80; // above this $ estimate, always verify even if confident
+
 function shouldSearch(tag) {
   if (!tag) return false;
   const est = Number(tag.estResale) || 0;
+  const isBranded = !!(tag.brand && tag.model);
 
-  const idSure    = tag.idConfidence === 'high';
+  // Generic items (no clear brand+model) are where the worst over-valuations
+  // happen — always verify unless they're cheap enough not to matter.
+  if (!isBranded) {
+    return est >= 40 || ['furniture', 'gym_equipment', 'appliance_large', 'outdoor'].includes(tag.category);
+  }
+
+  // Branded items: trust the AI only if confident on BOTH id and price AND the
+  // estimate is below the ceiling. Above the ceiling, verify — that's where a
+  // wrong estimate costs the user real money.
+  const idSure = tag.idConfidence === 'high';
   const priceSure = tag.priceConfidence === 'high';
+  if (idSure && priceSure && est < AI_TRUST_CEILING) return false;
 
-  // Confident on BOTH → trust the AI estimate, no search needed.
-  if (idSure && priceSure) return false;
-
-  // Otherwise the estimate is uncertain. Only pay to verify if the item is
-  // worth enough to matter. Use the AI estimate if present; if the model
-  // couldn't even estimate (est 0/unknown), fall back to a category anchor so
-  // a genuinely unidentified-but-bulky item (furniture, appliance) still gets
-  // verified rather than skipped on a missing number.
-  const valueProxy = est > 0
-    ? est
-    : (CATEGORY_RETAIL_ANCHOR[tag.category] || 50) * (SIZE_MULT[tag.sizeClass] || 1);
-
-  return valueProxy >= 60;
+  // Otherwise verify if it's worth enough to matter.
+  return est >= 40;
 }
 
 // Convert a comp result + condition into a final FB resale number.
@@ -483,7 +487,11 @@ async function analyzeBatchWithVision(items, tracker) {
     if (resale === null || resale <= 0) {
       const aiEst = Number(tag.estResale) || 0;
       if (aiEst > 0) {
-        resale = aiEst;
+        // The AI tends to anchor toward new-retail rather than used-resale for
+        // unverified items. Apply a modest haircut to counter that known bias.
+        // (Only applies to items that skipped the search — verified comps don't
+        // need this.) Items reaching here are < $80 by the shouldSearch rules.
+        resale = Math.round(aiEst * 0.85);
         source = `ai-${tag.priceConfidence || 'est'}`;
         if (tracker) tracker.itemsAiPriced = (tracker.itemsAiPriced || 0) + 1;
       } else {
