@@ -8,8 +8,13 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 // fireThreshold, emailFireAlerts }
 export async function syncSettings(req, res) {
   try {
-    const { sessionToken, targetMargin, buyersPremium, fireThreshold, emailFireAlerts } = req.body || {};
-    const user = sessionToken ? await validateSession(sessionToken) : null;
+    // Read the token the SAME way the rest of the API does: Authorization
+    // header first (Bearer ...), with body/query as fallbacks.
+    const token = req.headers.authorization?.replace('Bearer ', '')
+      || req.body?.sessionToken
+      || req.query?.sessionToken;
+    const { targetMargin, buyersPremium, fireThreshold, emailFireAlerts } = req.body || {};
+    const user = token ? await validateSession(token) : null;
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
     // Clamp to sane ranges (defend against bad client input)
