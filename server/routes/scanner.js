@@ -126,8 +126,37 @@ async function fetchAllItems(affiliateId) {
 
   return [...new Map(
     rawItems.filter(i => i.lot_number && i.title && i.title.length > 3)
-    .map(i => [i.lot_number, i])
+    .map(i => {
+      // BidRL HTML-encodes titles: 2&#34; -> 2", &#38; -> &, etc. Decode at the
+      // boundary so the DB, AI prompt, and Facebook caption all see clean text
+      // (real " and ' marks for measurements like 6' tall / 20" wide).
+      i.title = decodeHtmlEntities(i.title);
+      if (i.auction_title) i.auction_title = decodeHtmlEntities(i.auction_title);
+      return [i.lot_number, i];
+    })
   ).values()];
+}
+
+// Decode the HTML entities BidRL emits in listing titles. Covers numeric
+// (&#34; &#39; &#160;), hex (&#x22;), and the common named entities. This is
+// intentionally small and dependency-free — it only needs to handle what
+// BidRL actually sends, not arbitrary HTML.
+function decodeHtmlEntities(str) {
+  if (!str || typeof str !== 'string') return str;
+  return str
+    // numeric decimal: &#34; -> "
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
+    // numeric hex: &#x22; -> "
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    // common named entities
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#039;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&nbsp;/g, ' ')
+    // &amp; LAST so we don't double-decode things like &amp;#34;
+    .replace(/&amp;/g, '&');
 }
 
 // Convert a BidRL thumbnail URL to full resolution
