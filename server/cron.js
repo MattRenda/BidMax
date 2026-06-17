@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { runScanForAffiliate } from './routes/scanner.js';
 import { postDailyFind } from './routes/fb-daily-post.js';
+import { sendFireDealAlerts } from './routes/deal-alerts.js';
 
 // ── Active affiliates — add new ones here as demand grows ──
 // Phase 1: Rocklin only
@@ -57,7 +58,14 @@ cron.schedule('0 11 * * *', async () => {
   await postDailyFind();
 }, { timezone: 'America/Los_Angeles' });
 
+// Fire-deal alerts — check every 15 min during active auction hours (7am-9pm PT)
+// so "ending within 1 hour" alerts actually reach users in time.
+cron.schedule('*/15 7-21 * * *', async () => {
+  await sendFireDealAlerts();
+}, { timezone: 'America/Los_Angeles' });
+
 console.log(`[Cron] Scheduler active for: ${AFFILIATES.map(a => a.name).join(', ')}`);
 console.log('[Cron] Full scan: 7am-8pm PT hourly + midnight');
 console.log('[Cron] Bid updates: real-time via Pusher');
 console.log('[Cron] Daily Facebook find: 11am PT');
+console.log('[Cron] Fire-deal alerts: every 15 min, 7am-9pm PT');

@@ -12,6 +12,8 @@ import { getEbayComps } from './routes/comps.js';
 import { getAffiliates, getItems as getBidrlItems, getLiveBid } from './routes/bidrl.js';
 import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
 import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems, requestLocation, getLocationRequests, revealLot } from './routes/scanner.js';
+import { postDailyFind } from './routes/fb-daily-post.js';
+import { syncSettings, unsubscribe } from './routes/settings-sync.js';
 import { handleRevenueCatWebhook } from './routes/revenuecat-webhook.js';
 import { startPusherListener } from './routes/pusher-listener.js';
 import './cron.js';
@@ -65,12 +67,18 @@ app.get('/auth/google-mobile/callback', mobileAuthCallback);
 // Scanner DB routes (pre-analyzed, app + extension use these)
 app.get('/api/top-picks', getTopPicks);
 app.get('/api/items', getItems);
+app.post('/api/settings', syncSettings);
+app.get('/unsubscribe', unsubscribe);
 app.get('/api/reveal/:lotNumber', revealLot);   // usage-gated reveal for free users
 app.get('/api/lot/:lotNumber', getLotAnalysis);  // no usage gate (Pro / internal)
 app.post('/api/request-location', requestLocation);
 app.get('/api/location-requests', getLocationRequests);
 app.get('/api/scan', scanLimiter, runFullScan);
-app.get('/api/scan/:affiliateId', scanLimiter, (req, res) => { runScanForAffiliate(req.params.affiliateId); res.json({ ok: true }); });
+app.get('/api/scan/:affiliateId', scanLimiter, (req, res) => {
+  const limit = req.query.limit ? parseInt(req.query.limit) : null;
+  runScanForAffiliate(req.params.affiliateId, limit);
+  res.json({ ok: true, limited: limit });
+});
 
 // Core analyze routes (on-demand AI analysis — fallback for items not in DB)
 app.post('/api/analyze', analyzeLimiter, analyzeLot);
@@ -117,6 +125,24 @@ async function loadAuthRoutes() {
     app.post('/billing/checkout', createCheckout);
     app.post('/billing/portal', createPortal);
     app.post('/billing/webhook', handleWebhook);
+
+    // GET /admin/post-now — manually trigger the daily Facebook post.
+    // Accepts the admin secret via the x-admin-secret header OR a ?secret=
+    // query param (the query param lets you trigger it straight from a browser).
+    app.get('/admin/post-now', async (req, res) => {
+      const secret = req.headers['x-admin-secret'] || req.query.secret;
+      if (secret !== process.env.ADMIN_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      try {
+        await postDailyFind();
+        res.json({ ok: true, message: 'Daily find post triggered — check logs and your Page.' });
+      } catch (e) {
+        console.error('[FB] Manual trigger error:', e.message);
+        res.status(500).json({ ok: false, error: e.message });
+      }
+    });
+
     // GET /admin/affiliate-report — monthly payout report
     app.get('/admin/affiliate-report', async (req, res) => {
       const secret = req.headers['x-admin-secret'];
