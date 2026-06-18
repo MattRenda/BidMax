@@ -4,6 +4,9 @@ import { createClient } from '@supabase/supabase-js';
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
+// One-time boot diagnostic: prove whether the running process can see the key.
+console.log('[Alerts] boot: RESEND_API_KEY present?', !!RESEND_API_KEY,
+  RESEND_API_KEY ? `(prefix ${RESEND_API_KEY.slice(0, 6)})` : '(MISSING)');
 // Sender must be on a Resend-VERIFIED domain. bidmaxapp.com (root) is verified
 // in Resend, so we default to it. (Earlier this defaulted to send.bidmaxapp.com,
 // a subdomain that was NOT verified in Resend, causing sends to fail.)
