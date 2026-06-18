@@ -639,10 +639,12 @@ async function scanAffiliate(affiliateId, maxItems = null) {
             .lt('current_bid', newBid); // only if stored bid is LOWER → never lower a bid
         }
 
-        // 2) Always refresh non-bid metadata (end time, item id) — safe to overwrite.
+        // 2) Always refresh non-bid metadata (end time, item id, high bidder).
+        //    high_bidder (BidRL "winner") changes as bidding happens, so refresh
+        //    it unconditionally like ends_at — not gated by the bid-raise guard.
         await supabase
           .from('analyzed_lots')
-          .update({ ends_at: endsAt, item_id: item.id || null })
+          .update({ ends_at: endsAt, item_id: item.id || null, high_bidder: item.winner || item.highbidder_username || null })
           .eq('lot_number', item.lot_number)
           .eq('affiliate_id', String(affiliateId));
       }
@@ -682,6 +684,7 @@ async function scanAffiliate(affiliateId, maxItems = null) {
             current_bid: parseFloat(item.current_bid) || 0,
             minimum_bid: parseFloat(item.minimum_bid) || 0,
             ends_at: item.ends ? parseInt(item.ends) + 7200 : null,
+            high_bidder: item.winner || item.highbidder_username || null,
             resell_value: Math.round(resellValue) || 0,
             condition: result.condition || 'unknown',
             lot_notes: result.lotNotes || null,
@@ -742,10 +745,11 @@ export async function refreshBidsForAffiliate(affiliateId) {
           .eq('affiliate_id', String(affiliateId))
           .lt('current_bid', newBid);
       }
-      // end time is safe to refresh unconditionally
+      // end time + high bidder are safe to refresh unconditionally (both change
+      // as bidding happens, independent of whether the bid value raised here)
       await supabase
         .from('analyzed_lots')
-        .update({ ends_at: endsAt })
+        .update({ ends_at: endsAt, high_bidder: item.winner || item.highbidder_username || null })
         .eq('lot_number', item.lot_number)
         .eq('affiliate_id', String(affiliateId));
     }

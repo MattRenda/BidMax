@@ -27,12 +27,19 @@ async function handleBidEvent(lotNumber, data) {
     // out-of-order event delivery (possible after a reconnect) can't write a
     // stale lower bid over a newer one. Consistent with the scan's bid-refresh.
     if (newBid > 0) {
+      // A bid event means the high bidder just changed. Pusher exposes the
+      // readable handle as `highbidder_username` (note: `high_bidder` here is the
+      // numeric user ID, not the name). Write it alongside the raised bid, guarded
+      // so a stale lower bid never overwrites.
+      const winnerName = bidData.highbidder_username || null;
+      const bidUpdate = { current_bid: newBid, minimum_bid: newMin };
+      if (winnerName) bidUpdate.high_bidder = winnerName;
       const { error } = await supabase
         .from('analyzed_lots')
-        .update({ current_bid: newBid, minimum_bid: newMin })
+        .update(bidUpdate)
         .eq('lot_number', lotNumber)
         .lt('current_bid', newBid);
-      if (!error) console.log(`[Pusher] Bid update: ${lotNumber} -> $${newBid}`);
+      if (!error) console.log(`[Pusher] Bid update: ${lotNumber} -> $${newBid}${winnerName ? ` (winner: ${winnerName})` : ''}`);
     }
 
     // End time can change (auction extensions) — safe to refresh unconditionally.
