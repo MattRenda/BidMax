@@ -14,6 +14,7 @@ import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
 import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems, requestLocation, getLocationRequests, revealLot } from './routes/scanner.js';
 import { postDailyFind } from './routes/fb-daily-post.js';
 import { syncSettings, unsubscribe } from './routes/settings-sync.js';
+import { sendTestAlert, sendFireDealAlerts } from './routes/deal-alerts.js';
 import { handleRevenueCatWebhook } from './routes/revenuecat-webhook.js';
 import { startPusherListener } from './routes/pusher-listener.js';
 import './cron.js';
@@ -139,6 +140,41 @@ async function loadAuthRoutes() {
         res.json({ ok: true, message: 'Daily find post triggered — check logs and your Page.' });
       } catch (e) {
         console.error('[FB] Manual trigger error:', e.message);
+        res.status(500).json({ ok: false, error: e.message });
+      }
+    });
+
+    // GET /admin/test-alert?secret=...&to=you@email.com&lot=RA1234
+    // Sends a single TEST fire-deal email (bypasses time window + dedup) so you
+    // can verify Resend delivery and rendering. `lot` is optional — omit it to
+    // send a sample email; include a real lot_number to render that lot.
+    app.get('/admin/test-alert', async (req, res) => {
+      const secret = req.headers['x-admin-secret'] || req.query.secret;
+      if (secret !== process.env.ADMIN_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      const to = req.query.to;
+      if (!to) return res.status(400).json({ error: 'Provide ?to=email address' });
+      try {
+        const result = await sendTestAlert(to, req.query.lot || null);
+        res.status(result.ok ? 200 : 500).json(result);
+      } catch (e) {
+        console.error('[Alerts] test-alert error:', e.message);
+        res.status(500).json({ ok: false, error: e.message });
+      }
+    });
+
+    // GET /admin/check-alerts?secret=... — run the real alert check immediately
+    // (same logic as the cron: real thresholds, time window, and dedup all apply).
+    app.get('/admin/check-alerts', async (req, res) => {
+      const secret = req.headers['x-admin-secret'] || req.query.secret;
+      if (secret !== process.env.ADMIN_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      try {
+        await sendFireDealAlerts();
+        res.json({ ok: true, message: 'Alert check ran — see logs for how many sent.' });
+      } catch (e) {
         res.status(500).json({ ok: false, error: e.message });
       }
     });
