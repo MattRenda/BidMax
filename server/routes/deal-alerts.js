@@ -94,6 +94,40 @@ function buildEmail(user, lot) {
 }
 
 // Main entry — called by cron every ~15 min.
+// Send a TEST alert email on demand, bypassing the time-window and dedup checks.
+// Used by the /admin/test-alert endpoint to verify Resend delivery + rendering.
+// If a lotNumber is given, uses that real lot; otherwise builds a sample lot.
+export async function sendTestAlert(toEmail, lotNumber = null) {
+  // Build the user context with default settings for the calc
+  const user = { id: 'test', email: toEmail, target_margin: 30, buyers_premium: 15 };
+
+  let lot;
+  if (lotNumber) {
+    const { data } = await supabase
+      .from('analyzed_lots')
+      .select('lot_number, title, image_url, item_url, resell_value, current_bid, ends_at')
+      .eq('lot_number', lotNumber)
+      .maybeSingle();
+    if (!data) return { ok: false, error: `Lot ${lotNumber} not found` };
+    lot = data;
+  } else {
+    // Sample lot so you can test with no real data
+    lot = {
+      lot_number: 'TEST000',
+      title: 'TEST — Ninja Woodfire Pro Connect Premium XL Outdoor Grill & Smoker',
+      image_url: 'https://upwjsmlsrbxukxsewyme.supabase.co/storage/v1/object/public/placeholder.jpg',
+      item_url: 'https://www.bidrl.com',
+      resell_value: 450,
+      current_bid: 40,
+      ends_at: Math.floor(Date.now() / 1000) + 2 * 3600 + 30 * 60, // ~30 min left
+    };
+  }
+
+  const { subject, html } = buildEmail(user, lot);
+  const ok = await sendEmail(toEmail, `[TEST] ${subject}`, html);
+  return { ok, error: ok ? null : 'Resend send failed (check RESEND_API_KEY and sender domain)' };
+}
+
 export async function sendFireDealAlerts() {
   console.log('[Alerts] Checking for fire deals ending soon...');
   try {
