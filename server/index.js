@@ -11,7 +11,7 @@ import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
 import { getAffiliates, getItems as getBidrlItems, getLiveBid } from './routes/bidrl.js';
 import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
-import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems, requestLocation, getLocationRequests, revealLot } from './routes/scanner.js';
+import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems, requestLocation, getLocationRequests, revealLot, refreshBidsForAffiliate } from './routes/scanner.js';
 import { postDailyFind } from './routes/fb-daily-post.js';
 import { syncSettings, unsubscribe } from './routes/settings-sync.js';
 import { sendTestAlert, sendFireDealAlerts } from './routes/deal-alerts.js';
@@ -175,6 +175,24 @@ async function loadAuthRoutes() {
         await sendFireDealAlerts();
         res.json({ ok: true, message: 'Alert check ran — see logs for how many sent.' });
       } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+      }
+    });
+
+    // GET /admin/refresh-bids?secret=...&affiliate=75 — refresh bids/ends/high_bidder
+    // for existing lots from BidRL. NO Anthropic analysis = no credit cost. Use this
+    // to populate high_bidder on existing rows without a full (expensive) scan.
+    app.get('/admin/refresh-bids', async (req, res) => {
+      const secret = req.headers['x-admin-secret'] || req.query.secret;
+      if (secret !== process.env.ADMIN_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      const affiliate = req.query.affiliate || '75';
+      try {
+        await refreshBidsForAffiliate(affiliate);
+        res.json({ ok: true, message: `Bid refresh ran for affiliate ${affiliate} — high_bidder/ends/bids updated. No analysis performed.` });
+      } catch (e) {
+        console.error('[Refresh] manual trigger error:', e.message);
         res.status(500).json({ ok: false, error: e.message });
       }
     });
