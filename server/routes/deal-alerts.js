@@ -7,6 +7,10 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 // One-time boot diagnostic: prove whether the running process can see the key.
 console.log('[Alerts] boot: RESEND_API_KEY present?', !!RESEND_API_KEY,
   RESEND_API_KEY ? `(prefix ${RESEND_API_KEY.slice(0, 6)})` : '(MISSING)');
+// Show which env var names the process actually has (names only, no values) so
+// we can spot scoping issues or name typos/whitespace.
+console.log('[Alerts] boot: env names matching resend/email:',
+  JSON.stringify(Object.keys(process.env).filter(k => /resend|email/i.test(k))));
 // Sender must be on a Resend-VERIFIED domain. bidmaxapp.com (root) is verified
 // in Resend, so we default to it. (Earlier this defaulted to send.bidmaxapp.com,
 // a subdomain that was NOT verified in Resend, causing sends to fail.)
