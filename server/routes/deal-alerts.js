@@ -52,8 +52,12 @@ async function sendEmail(to, subject, html) {
       body: JSON.stringify({ from: FROM_EMAIL, to, subject, html }),
     });
     const json = await res.json();
-    if (json.id) return { ok: true };
-    const detail = json.message || json.name || JSON.stringify(json);
+    // Log the full picture so we can see exactly what Resend returned.
+    console.log('[Alerts] Resend HTTP', res.status, '| response:', JSON.stringify(json),
+      '| key prefix:', RESEND_API_KEY ? RESEND_API_KEY.slice(0, 6) : 'NONE',
+      '| from:', FROM_EMAIL, '| to:', to);
+    if (res.status >= 200 && res.status < 300 && json.id) return { ok: true, id: json.id };
+    const detail = json.message || json.name || `HTTP ${res.status}: ${JSON.stringify(json)}`;
     console.error('[Alerts] Resend error:', detail, '| from:', FROM_EMAIL);
     return { ok: false, error: detail };
   } catch (e) {
@@ -129,7 +133,7 @@ export async function sendTestAlert(toEmail, lotNumber = null) {
 
   const { subject, html } = buildEmail(user, lot);
   const sendResult = await sendEmail(toEmail, `[TEST] ${subject}`, html);
-  return { ok: sendResult.ok, error: sendResult.error || null, from: FROM_EMAIL };
+  return { ok: sendResult.ok, id: sendResult.id || null, error: sendResult.error || null, from: FROM_EMAIL };
 }
 
 export async function sendFireDealAlerts() {
