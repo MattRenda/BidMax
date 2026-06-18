@@ -16,7 +16,9 @@ console.log('[Alerts] boot: env names matching resend/email:',
 // a subdomain that was NOT verified in Resend, causing sends to fail.)
 const FROM_EMAIL = process.env.ALERT_FROM_EMAIL || 'BidMax Alerts <alerts@bidmaxapp.com>';
 const APP_LANDING = 'https://bidmaxapp.com';
-const BUSINESS_ADDRESS = 'BidMax LLC, 9033 Farmstead Cir, Roseville, CA 95747';
+// Logo shown at the top of alert emails. Set LOGO_URL in Railway to a public
+// image URL (e.g. a Supabase storage URL or bidmaxapp.com/logo.png).
+const LOGO_URL = process.env.LOGO_URL || 'https://bidmaxapp.com/logo.png';
 
 // Only alert on lots ending within this window (seconds). 1 hour per spec.
 const ENDING_WINDIN_SEC = 60 * 60;
@@ -86,9 +88,10 @@ function buildEmail(user, lot) {
   const mins = minutesLeft(lot.ends_at);
   const unsubUrl = `${APP_LANDING}/unsubscribe?u=${encodeURIComponent(user.id)}`;
   return {
-    subject: `🔥 Fire deal ending soon: ${lot.title.slice(0, 60)}`,
+    subject: `🔥 ${lot.title.slice(0, 50)}`,
     html: `
       <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:0 auto;color:#0f172a;">
+        ${LOGO_URL ? `<div style="text-align:center;padding:8px 0 16px;"><img src="${LOGO_URL}" alt="BidMax" style="height:40px;"></div>` : ''}
         <h2 style="color:#dc2626;">🔥 Fire Deal Ending Soon</h2>
         <p style="font-size:16px;font-weight:600;">${lot.title}</p>
         ${lot.image_url ? `<img src="${lot.image_url}" alt="" style="width:100%;max-width:480px;border-radius:8px;">` : ''}
@@ -102,7 +105,7 @@ function buildEmail(user, lot) {
         <a href="${lot.item_url || APP_LANDING}" style="display:inline-block;background:#16a34a;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Lot on BidRL</a>
         <p style="font-size:12px;color:#64748b;margin-top:24px;">
           You're receiving this because you enabled Fire Deal alerts in BidMax.
-          <a href="${unsubUrl}">Unsubscribe</a><br>${BUSINESS_ADDRESS}
+          <a href="${unsubUrl}">Unsubscribe</a><br>BidMax · ${APP_LANDING}
         </p>
       </div>`,
   };
