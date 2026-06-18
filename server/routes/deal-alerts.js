@@ -4,7 +4,10 @@ import { createClient } from '@supabase/supabase-js';
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const FROM_EMAIL = process.env.ALERT_FROM_EMAIL || 'BidMax Alerts <alerts@send.bidmaxapp.com>';
+// Sender must be on a Resend-VERIFIED domain. bidmaxapp.com (root) is verified
+// in Resend, so we default to it. (Earlier this defaulted to send.bidmaxapp.com,
+// a subdomain that was NOT verified in Resend, causing sends to fail.)
+const FROM_EMAIL = process.env.ALERT_FROM_EMAIL || 'BidMax Alerts <alerts@bidmaxapp.com>';
 const APP_LANDING = 'https://bidmaxapp.com';
 const BUSINESS_ADDRESS = 'BidMax LLC, 9033 Farmstead Cir, Roseville, CA 95747';
 
@@ -49,12 +52,13 @@ async function sendEmail(to, subject, html) {
       body: JSON.stringify({ from: FROM_EMAIL, to, subject, html }),
     });
     const json = await res.json();
-    if (json.id) return true;
-    console.error('[Alerts] Resend error:', json.message || JSON.stringify(json));
-    return false;
+    if (json.id) return { ok: true };
+    const detail = json.message || json.name || JSON.stringify(json);
+    console.error('[Alerts] Resend error:', detail, '| from:', FROM_EMAIL);
+    return { ok: false, error: detail };
   } catch (e) {
     console.error('[Alerts] send error:', e.message);
-    return false;
+    return { ok: false, error: e.message };
   }
 }
 
@@ -124,8 +128,8 @@ export async function sendTestAlert(toEmail, lotNumber = null) {
   }
 
   const { subject, html } = buildEmail(user, lot);
-  const ok = await sendEmail(toEmail, `[TEST] ${subject}`, html);
-  return { ok, error: ok ? null : 'Resend send failed (check RESEND_API_KEY and sender domain)' };
+  const sendResult = await sendEmail(toEmail, `[TEST] ${subject}`, html);
+  return { ok: sendResult.ok, error: sendResult.error || null, from: FROM_EMAIL };
 }
 
 export async function sendFireDealAlerts() {
@@ -182,8 +186,8 @@ export async function sendFireDealAlerts() {
         if (already) continue;
 
         const { subject, html } = buildEmail({ ...user, target_margin: tm, buyers_premium: bp }, lot);
-        const ok = await sendEmail(user.email, subject, html);
-        if (ok) {
+        const sendResult = await sendEmail(user.email, subject, html);
+        if (sendResult.ok) {
           await supabase.from('deal_alerts_sent').insert({
             user_id: user.id, lot_number: lot.lot_number, sent_at: new Date().toISOString(),
           });
