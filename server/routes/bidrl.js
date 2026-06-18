@@ -35,10 +35,12 @@ export async function getAffiliates(req, res) {
       return res.json(data);
     }
 
-    const enriched = (Array.isArray(data) ? data : []).map(aff => ({
-      ...aff,
-      supported: supportedIds.has(String(aff.value)),
-    }));
+    const enriched = (Array.isArray(data) ? data : [])
+      .filter(aff => aff.value && String(aff.value) !== '0')
+      .map(aff => ({
+        ...aff,
+        supported: supportedIds.has(String(aff.value)),
+      }));
 
     res.json(enriched);
   } catch (err) {
@@ -80,11 +82,18 @@ export async function getLiveBid(req, res) {
 
     const { data: dbItem } = await supabase
       .from('analyzed_lots')
-      .select('current_bid, minimum_bid, ends_at')
+      .select('current_bid, minimum_bid, ends_at, high_bidder')
       .eq('lot_number', lotNumber)
       .single();
 
     if (!dbItem) return res.status(404).json({ error: 'Item not found' });
+
+    // ends_at carries a +2h (7200s) offset (added at ingestion). Subtract it to
+    // get the true epoch end, then compute live seconds remaining at request time.
+    // The client should still tick this down between polls — it's a live countdown,
+    // so a stored value would be stale instantly; this is fresh as of THIS request.
+    const rawEnd = dbItem.ends_at ? dbItem.ends_at - 7200 : 0;
+    const secondsRemaining = rawEnd ? Math.max(0, rawEnd - Math.floor(Date.now() / 1000)) : null;
 
     return res.json({
       lotNumber,
@@ -92,6 +101,8 @@ export async function getLiveBid(req, res) {
       minimumBid: parseFloat(dbItem.minimum_bid) || 0,
       bidCount: 0,
       endsAt: dbItem.ends_at || 0,
+      secondsRemaining,
+      highBidder: dbItem.high_bidder || null,
     });
   } catch (err) {
     console.error('Live bid proxy error:', err.message);
