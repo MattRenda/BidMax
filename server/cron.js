@@ -28,9 +28,14 @@ const AFFILIATES = [
 // Max NEW items analyzed per scan. Throttles cost so a big backlog (or a huge
 // fresh auction) drains gradually across many scans instead of all at once.
 // 15 scans/day × 40 = up to 600 new items/day — enough to keep up with normal
-// auctions, but a hard ceiling on any single scan's spend.
-// Set to null to disable the cap.
-const MAX_NEW_ITEMS_PER_SCAN = 40;
+// How many NEW items to classify + store per scan. Classification is cheap
+// (Haiku), so this can be generous — it controls how fast items appear in the
+// app, NOT cost. The expensive web-search step is governed separately by the
+// hard $DAILY_BUDGET_USD/day ceiling in scanner.js, so a big number here is safe:
+// all these items get classified and stored with at least a cheap AI estimate,
+// while only the daily-budget's worth get web-verified.
+// Set to null to disable the cap entirely.
+const MAX_NEW_ITEMS_PER_SCAN = 250;
 
 // Full scan 7am-8pm PT hourly — catches new auction drops morning and evening
 // Bid updates are handled in real-time by Pusher (pusher-listener.js)
