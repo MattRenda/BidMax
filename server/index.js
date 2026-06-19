@@ -16,7 +16,7 @@ import { postDailyFind } from './routes/fb-daily-post.js';
 import { syncSettings, unsubscribe } from './routes/settings-sync.js';
 import { sendTestAlert, sendFireDealAlerts } from './routes/deal-alerts.js';
 import { handleRevenueCatWebhook } from './routes/revenuecat-webhook.js';
-import { startPusherListener } from './routes/pusher-listener.js';
+import { startPusherListener, registerSseClient, unregisterSseClient } from './routes/pusher-listener.js';
 import './cron.js';
 
 dotenv.config();
@@ -86,6 +86,20 @@ app.post('/api/analyze', analyzeLimiter, analyzeLot);
 app.post('/api/analyze-batch', analyzeLimiter, analyzeBatch);
 app.post('/api/comps', analyzeLimiter, getEbayComps);
 app.get('/api/health', (_, res) => res.json({ ok: true }));
+
+// SSE endpoint — the app connects here to receive real-time bid/end updates
+// broadcast from the Pusher listener without polling.
+app.get('/api/bid-stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // prevent nginx/Railway from buffering
+  res.flushHeaders();
+  // Heartbeat every 25s keeps Railway's proxy from timing out the idle connection.
+  const heartbeat = setInterval(() => { try { res.write(': heartbeat\n\n'); } catch {} }, 25000);
+  registerSseClient(res);
+  req.on('close', () => { clearInterval(heartbeat); unregisterSseClient(res); });
+});
 
 // Auth + billing routes — load lazily so startup errors don't kill the server
 async function loadAuthRoutes() {
