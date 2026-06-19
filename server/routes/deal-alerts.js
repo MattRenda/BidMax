@@ -81,29 +81,41 @@ function minutesLeft(endsAt) {
   // subtract it back out here to get true minutes remaining.
 }
 
-function buildEmail(user, lot) {
-  const { maxBid, expectedProfit } = calcBid(
-    lot.resell_value, user.target_margin, user.buyers_premium
-  );
-  const mins = minutesLeft(lot.ends_at);
+// Build ONE email containing all of a user's qualifying fire deals as cards.
+// `lots` is an array; each gets its own card. Subject summarizes the count.
+function buildEmail(user, lots) {
   const unsubUrl = `${APP_LANDING}/unsubscribe?u=${encodeURIComponent(user.id)}`;
-  return {
-    subject: `🔥 ${lot.title.slice(0, 50)}`,
-    html: `
-      <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:0 auto;color:#0f172a;">
-        ${LOGO_URL ? `<div style="text-align:center;padding:8px 0 16px;"><img src="${LOGO_URL}" alt="BidMax" style="height:40px;"></div>` : ''}
-        <h2 style="color:#dc2626;">🔥 Fire Deal Ending Soon</h2>
-        <p style="font-size:16px;font-weight:600;">${lot.title}</p>
+  const n = lots.length;
+
+  // Sort soonest-ending first so the most urgent deal is at the top.
+  const ordered = [...lots].sort((a, b) => (a.ends_at || 0) - (b.ends_at || 0));
+
+  const cards = ordered.map(lot => {
+    const { maxBid, expectedProfit } = calcBid(lot.resell_value, user.target_margin, user.buyers_premium);
+    const mins = minutesLeft(lot.ends_at);
+    return `
+      <div style="border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin:0 0 16px;">
+        <p style="font-size:16px;font-weight:600;margin:0 0 8px;">${lot.title}</p>
         ${lot.image_url ? `<img src="${lot.image_url}" alt="" style="width:100%;max-width:480px;border-radius:8px;">` : ''}
-        <table style="width:100%;font-size:15px;margin:16px 0;">
+        <table style="width:100%;font-size:15px;margin:12px 0;">
           <tr><td>Estimated resale</td><td style="text-align:right;font-weight:600;">$${Math.round(lot.resell_value)}</td></tr>
           <tr><td>Current bid</td><td style="text-align:right;">$${Math.round(lot.current_bid)}</td></tr>
           <tr><td>Your max bid</td><td style="text-align:right;font-weight:600;">$${maxBid}</td></tr>
           <tr><td>Profit at your max</td><td style="text-align:right;color:#16a34a;font-weight:600;">$${expectedProfit}</td></tr>
           <tr><td>Time left</td><td style="text-align:right;color:#dc2626;font-weight:600;">~${mins} min</td></tr>
         </table>
-        <a href="${lot.item_url || APP_LANDING}" style="display:inline-block;background:#16a34a;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Lot on BidRL</a>
-        <p style="font-size:12px;color:#64748b;margin-top:24px;">
+        <a href="${lot.item_url || APP_LANDING}" style="display:inline-block;background:#16a34a;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;">View Lot on BidRL</a>
+      </div>`;
+  }).join('');
+
+  return {
+    subject: n === 1 ? `🔥 ${ordered[0].title.slice(0, 50)}` : `🔥 ${n} fire deals ending soon`,
+    html: `
+      <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:0 auto;color:#0f172a;">
+        ${LOGO_URL ? `<div style="text-align:center;padding:8px 0 16px;"><img src="${LOGO_URL}" alt="BidMax" style="height:40px;"></div>` : ''}
+        <h2 style="color:#dc2626;">🔥 ${n === 1 ? 'Fire Deal Ending Soon' : `${n} Fire Deals Ending Soon`}</h2>
+        ${cards}
+        <p style="font-size:12px;color:#64748b;margin-top:8px;">
           You're receiving this because you enabled Fire Deal alerts in BidMax.
           <a href="${unsubUrl}">Unsubscribe</a><br>BidMax · ${APP_LANDING}
         </p>
@@ -141,7 +153,7 @@ export async function sendTestAlert(toEmail, lotNumber = null) {
     };
   }
 
-  const { subject, html } = buildEmail(user, lot);
+  const { subject, html } = buildEmail(user, [lot]);
   const sendResult = await sendEmail(toEmail, `[TEST] ${subject}`, html);
   return { ok: sendResult.ok, id: sendResult.id || null, error: sendResult.error || null, from: FROM_EMAIL };
 }
@@ -178,7 +190,7 @@ export async function sendFireDealAlerts() {
       return;
     }
 
-    let sent = 0;
+    let sentEmails = 0, totalLots = 0;
     for (const user of users) {
       // settings: use synced values or fall back to app defaults
       const s = user.user_settings || {};
@@ -186,30 +198,37 @@ export async function sendFireDealAlerts() {
       const bp = s.buyers_premium ?? 15;
       const ft = s.fire_threshold ?? 50;
 
-      for (const lot of lots) {
-        // Flag using the EXACT app logic
-        if (!isFireDeal(lot.resell_value, parseFloat(lot.current_bid) || 0, tm, bp, ft)) continue;
+      // Which lots has this user already been alerted about? One query, not one
+      // per lot — collect the set so we can dedup in memory.
+      const { data: priorAlerts } = await supabase
+        .from('deal_alerts_sent')
+        .select('lot_number')
+        .eq('user_id', user.id);
+      const alreadySent = new Set((priorAlerts || []).map(r => r.lot_number));
 
-        // Dedup: skip if this user was already alerted for this lot
-        const { data: already } = await supabase
-          .from('deal_alerts_sent')
-          .select('id')
-          .eq('user_id', user.id)
-          .eq('lot_number', lot.lot_number)
-          .maybeSingle();
-        if (already) continue;
+      // Gather every NEW fire deal for this user this cycle.
+      const userDeals = lots.filter(lot =>
+        !alreadySent.has(lot.lot_number) &&
+        isFireDeal(lot.resell_value, parseFloat(lot.current_bid) || 0, tm, bp, ft)
+      );
 
-        const { subject, html } = buildEmail({ ...user, target_margin: tm, buyers_premium: bp }, lot);
-        const sendResult = await sendEmail(user.email, subject, html);
-        if (sendResult.ok) {
-          await supabase.from('deal_alerts_sent').insert({
+      if (userDeals.length === 0) continue;
+
+      // ONE email for all of this user's deals (not one per lot).
+      const { subject, html } = buildEmail({ ...user, target_margin: tm, buyers_premium: bp }, userDeals);
+      const sendResult = await sendEmail(user.email, subject, html);
+      if (sendResult.ok) {
+        // Record all lots as sent so they aren't re-alerted next cycle.
+        await supabase.from('deal_alerts_sent').insert(
+          userDeals.map(lot => ({
             user_id: user.id, lot_number: lot.lot_number, sent_at: new Date().toISOString(),
-          });
-          sent++;
-        }
+          }))
+        );
+        sentEmails++;
+        totalLots += userDeals.length;
       }
     }
-    console.log(`[Alerts] Sent ${sent} fire-deal alert(s).`);
+    console.log(`[Alerts] Sent ${sentEmails} email(s) covering ${totalLots} fire deal(s).`);
   } catch (e) {
     console.error('[Alerts] sendFireDealAlerts error:', e.message);
   }
