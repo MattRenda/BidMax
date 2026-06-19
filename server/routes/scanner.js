@@ -15,6 +15,15 @@ const PRICING = {
 };
 const WEB_SEARCH_TOOL_COST = 0.01; // approx per-search tool fee
 
+// Daily analysis spend ceiling (hard stop). The cost tracker is known to
+// undercount real billing ~2x, so we charge searches against the budget at 2x
+// the estimate — this keeps REAL spend at or under the cap (may under-spend).
+const DAILY_BUDGET_USD = 3.00;
+const COST_UNDERCOUNT_FACTOR = 2;
+// Conservative per-search cost charged against the daily budget: tool fee plus a
+// typical search's token cost, all doubled. ~ (0.01 + ~0.01 tokens) * 2 ≈ $0.04.
+const BUDGETED_SEARCH_COST = (WEB_SEARCH_TOOL_COST + 0.01) * COST_UNDERCOUNT_FACTOR;
+
 function makeCostTracker() {
   return {
     classifyCalls: 0, classifyInTok: 0, classifyOutTok: 0,
@@ -52,6 +61,33 @@ function estCost(tracker) {
     total: classify + searchTok + searchTool,
   };
 }
+
+// ── Daily spend budget (hard $ ceiling, resets midnight PT) ──
+// Returns today's PT calendar date as YYYY-MM-DD.
+function pacificDay() {
+  // en-CA formats as YYYY-MM-DD; the timeZone shifts to Pacific.
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date());
+}
+
+// Read how much we've already spent (budgeted estimate) today.
+async function getTodaySpend() {
+  const day = pacificDay();
+  const { data } = await supabase
+    .from('daily_spend').select('spent').eq('day', day).maybeSingle();
+  return data ? Number(data.spent) || 0 : 0;
+}
+
+// Add to today's spend total (upsert).
+async function addTodaySpend(amount) {
+  const day = pacificDay();
+  const current = await getTodaySpend();
+  await supabase.from('daily_spend').upsert({
+    day, spent: current + amount, updated_at: new Date().toISOString(),
+  }, { onConflict: 'day' });
+}
+
 
 function printCostReport(tracker, affiliateId, newCount) {
   const cost = estCost(tracker);
@@ -491,17 +527,42 @@ async function analyzeBatchWithVision(items, tracker) {
   const tags = await classifyItems(items, imageData, tracker);
   if (tracker) tracker.itemsClassified += tags.filter(Boolean).length;
 
-  // STEP 2/3 — route each item, run comp searches sequentially (rate limits)
+  // STEP 2/3 — route each item, run comp searches sequentially (rate limits).
+  // Searches are gated by the daily spend budget: before each search we check
+  // today's accumulated cost; once it would exceed DAILY_BUDGET_USD we stop
+  // searching. Unsearched items still get a price below (cheap AI estimate), so
+  // nothing is dropped — it just isn't web-verified until budget allows.
   const comps = new Array(tags.length).fill(null);
-  const toSearch = tags
+  let toSearch = tags
     .map((tag, i) => ({ tag, i }))
     .filter(({ tag }) => tag && shouldSearch(tag));
 
+  // Search soonest-ending first so the most time-sensitive valuable lots get
+  // verified before the budget runs out.
+  toSearch.sort((a, b) => {
+    const ea = parseInt(items[a.i]?.ends) || Infinity;
+    const eb = parseInt(items[b.i]?.ends) || Infinity;
+    return ea - eb;
+  });
+
+  let spentToday = await getTodaySpend();
+  let searchesRun = 0, searchesSkipped = 0;
   for (const { tag, i } of toSearch) {
+    // Hard stop: if this search would push today's spend over the cap, stop.
+    if (spentToday + BUDGETED_SEARCH_COST > DAILY_BUDGET_USD) {
+      searchesSkipped++;
+      continue; // leave comps[i] null → priced by cheap AI estimate below
+    }
     comps[i] = await searchComps(tag, tracker);
+    spentToday += BUDGETED_SEARCH_COST;
+    await addTodaySpend(BUDGETED_SEARCH_COST);
+    searchesRun++;
     await new Promise(r => setTimeout(r, 4000));
   }
-  if (tracker) tracker.itemsSearched += toSearch.length;
+  if (tracker) tracker.itemsSearched += searchesRun;
+  if (searchesSkipped > 0) {
+    console.log(`[Scan] Daily $${DAILY_BUDGET_USD} budget reached — ran ${searchesRun} searches, deferred ${searchesSkipped} (priced via AI estimate). Spend today ~$${spentToday.toFixed(2)}.`);
+  }
 
   // Build final results.
   // Pricing priority: (1) comps if we searched, (2) the AI's own resale estimate
