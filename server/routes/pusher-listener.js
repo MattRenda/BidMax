@@ -14,6 +14,16 @@ let syncInterval = null;
 let started = false;
 let syncing = false;
 
+const sseClients = new Set();
+
+export function registerSseClient(res) {
+  sseClients.add(res);
+}
+
+export function unregisterSseClient(res) {
+  sseClients.delete(res);
+}
+
 async function handleBidEvent(lotNumber, data) {
   try {
     const item = typeof data === 'string' ? JSON.parse(data) : data;
@@ -48,6 +58,19 @@ async function handleBidEvent(lotNumber, data) {
         .from('analyzed_lots')
         .update({ ends_at: endsAt })
         .eq('lot_number', lotNumber);
+    }
+
+    // Push to any connected SSE clients so the app updates without polling.
+    if (sseClients.size) {
+      const broadcast = { lotNumber };
+      if (newBid > 0) { broadcast.currentBid = newBid; broadcast.highBidder = winnerName || null; }
+      if (endsAt !== undefined) broadcast.endsAt = endsAt;
+      if (broadcast.currentBid !== undefined || broadcast.endsAt !== undefined) {
+        const payload = `data: ${JSON.stringify(broadcast)}\n\n`;
+        for (const client of sseClients) {
+          try { client.write(payload); } catch { sseClients.delete(client); }
+        }
+      }
     }
   } catch (e) {
     console.error('[Pusher] handleBidEvent error:', e.message);
