@@ -249,6 +249,7 @@ IDENTIFICATION RULES:
 - The image is your best tool for identifying brand, model, and exact variant
 - A generic title like "Coffee Machine" with an image clearly showing a Breville Barista Express should be identified as Breville Barista Express
 - Capture dimensions/size when visible — they massively affect value (a 14ft frame pool vs a kiddie pool)
+- CRITICAL for size-variant products (rugs, tarps, canopies, shelving, pools, gazebos, tents, curtains, blinds): ALWAYS include the exact dimensions from the title in the 'model' field. The same product name at 2'x3' vs 8'x10' can differ 10x in price. Example: "Rugs.com Zermatt Shag 2'x3'" → model: "Zermatt Shag 2x3", NOT just "Zermatt Shag". If you omit the size, search results will mix all sizes and produce a wildly wrong price.
 
 CONDITION RULES (priority order):
 1. Title keywords first: NEW/SEALED/NIB → new; OPEN BOX/OPENED → open_box; USED/AS-IS/DAMAGED/PARTS → used_fair; GENTLY USED/REFURBISHED → used_good
@@ -305,7 +306,7 @@ brand/model may be null if genuinely not identifiable. sizeClass: small|medium|l
 // so the same product is never web-searched twice within the window — even if
 // the server redeploys mid-auction. This is the primary cost control.
 const searchCache = new Map();
-const CACHE_TTL_DAYS = 7;
+const CACHE_TTL_DAYS = 21;
 
 async function readPersistentCache(key) {
   try {
@@ -340,9 +341,30 @@ async function writePersistentCache(key, result) {
   }
 }
 
+// Regex that matches dimension patterns like 2'x3', 5x8, 8'x10", 2.5x4 ft, 30x60in
+const DIM_RE = /\b\d+(?:[''"]|\.\d+)?\s*[x×]\s*\d+(?:[''"]|\s*(?:ft|feet|in|inch|cm|m\b))?/i;
+
+function hasDimension(str) {
+  return DIM_RE.test(str);
+}
+
+function extractDimension(title) {
+  const m = title.match(DIM_RE);
+  return m ? m[0].trim() : null;
+}
+
 function buildSearchQuery(tag) {
   const brand = tag.brand || '';
-  const model = tag.model || '';
+  let model = tag.model || '';
+
+  // If the model is missing a size and the original title has one, append it.
+  // This catches size-variant products (rugs, pools, tarps, shelving) where the
+  // classifier returned only the product name and dropped the dimensions.
+  if (brand && model && !hasDimension(model) && tag._title) {
+    const dim = extractDimension(tag._title);
+    if (dim) model = `${model} ${dim}`.trim();
+  }
+
   if (brand && model) return `${brand} ${model}`.trim();
   // Generic high-value item: build a descriptive category query
   const parts = [tag.subtype || tag.category, tag.sizeClass !== 'medium' ? tag.sizeClass : ''].filter(Boolean);
@@ -453,12 +475,28 @@ const SIZE_MULT = { small: 0.7, medium: 1.0, large: 1.8 };
 // Evidence showed the AI anchors toward NEW RETAIL for mid-range tools/appliances
 // and badly over-values generic large items (a $60 fan estimated at $347). So we
 // verify with a search whenever the stakes (value) or ambiguity (generic) are high.
-const AI_TRUST_CEILING = 80; // above this $ estimate, always verify even if confident
+// For fully-identified branded items (idSure + priceSure), the AI's own estimate
+// is reliable up to $150. Generic/uncertain items stay at the original $80 ceiling
+// because those are where the worst over-valuations historically occurred.
+const AI_TRUST_CEILING_BRANDED = 150;
+const AI_TRUST_CEILING_GENERIC  = 80;
+
+// Categories where web search adds little value: items are too variable
+// (collectibles, apparel) or too cheap/unsellable locally (media, health_beauty)
+// to justify the search cost. Heuristic or AI estimate is sufficient.
+const NO_SEARCH_CATEGORIES = new Set(['apparel', 'media', 'health_beauty', 'collectible']);
 
 function shouldSearch(tag) {
   if (!tag) return false;
   const est = Number(tag.estResale) || 0;
   const isBranded = !!(tag.brand && tag.model);
+
+  // If AI couldn't identify the item, the search query will be vague and return
+  // scattered prices no better than the heuristic — skip the expense.
+  if (tag.idConfidence === 'low') return false;
+
+  // Low-resale or high-variability categories: comps don't reliably price these.
+  if (NO_SEARCH_CATEGORIES.has(tag.category)) return false;
 
   // Generic items (no clear brand+model) are where the worst over-valuations
   // happen — always verify unless they're cheap enough not to matter.
@@ -466,12 +504,14 @@ function shouldSearch(tag) {
     return est >= 40 || ['furniture', 'gym_equipment', 'appliance_large', 'outdoor'].includes(tag.category);
   }
 
-  // Branded items: trust the AI only if confident on BOTH id and price AND the
-  // estimate is below the ceiling. Above the ceiling, verify — that's where a
-  // wrong estimate costs the user real money.
+  // Branded items: trust the AI when it's confident on both identity and price.
+  // Raise the ceiling to $150 for fully-identified items — the AI's knowledge of
+  // common branded products (tools, appliances, electronics) is reliable up to
+  // that range, and a search would only confirm what we already know.
   const idSure = tag.idConfidence === 'high';
   const priceSure = tag.priceConfidence === 'high';
-  if (idSure && priceSure && est < AI_TRUST_CEILING) return false;
+  const ceiling = (idSure && priceSure) ? AI_TRUST_CEILING_BRANDED : AI_TRUST_CEILING_GENERIC;
+  if (idSure && priceSure && est < ceiling) return false;
 
   // Otherwise verify if it's worth enough to matter.
   return est >= 40;
@@ -526,6 +566,12 @@ async function analyzeBatchWithVision(items, tracker) {
   // STEP 1 — classify only (no prices)
   const tags = await classifyItems(items, imageData, tracker);
   if (tracker) tracker.itemsClassified += tags.filter(Boolean).length;
+
+  // Attach the original item title to each tag so buildSearchQuery can extract
+  // dimensions as a fallback when the classifier drops them from the model field.
+  for (let i = 0; i < tags.length; i++) {
+    if (tags[i]) tags[i]._title = items[i]?.title || '';
+  }
 
   // STEP 2/3 — route each item, run comp searches sequentially (rate limits).
   // Searches are gated by the daily spend budget: before each search we check
