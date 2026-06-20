@@ -10,8 +10,9 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 // Haiku 4.5 pricing (update if Anthropic changes rates).
 // ─────────────────────────────────────────────────────────────
 const PRICING = {
-  'claude-haiku-4-5':           { in: 0.80 / 1e6, out: 4.00 / 1e6 },
-  'claude-haiku-4-5-20251001':  { in: 0.80 / 1e6, out: 4.00 / 1e6 },
+  'claude-haiku-4-5':           { in: 0.80 / 1e6, out:  4.00 / 1e6 },
+  'claude-haiku-4-5-20251001':  { in: 0.80 / 1e6, out:  4.00 / 1e6 },
+  'claude-sonnet-4-6':          { in: 3.00 / 1e6, out: 15.00 / 1e6 },
 };
 const WEB_SEARCH_TOOL_COST = 0.01; // approx per-search tool fee
 
@@ -49,9 +50,10 @@ function logUsage(tracker, model, usage, kind) {
 }
 
 function estCost(tracker) {
-  const c = PRICING['claude-haiku-4-5'];
-  const classify = tracker.classifyInTok * c.in + tracker.classifyOutTok * c.out;
-  const searchTok = tracker.searchInTok * c.in + tracker.searchOutTok * c.out;
+  const cs = PRICING['claude-sonnet-4-6'];
+  const ch = PRICING['claude-haiku-4-5'];
+  const classify = tracker.classifyInTok * cs.in + tracker.classifyOutTok * cs.out;
+  const searchTok = tracker.searchInTok * ch.in + tracker.searchOutTok * ch.out;
   const searchTool = tracker.searchCalls * WEB_SEARCH_TOOL_COST;
   return {
     classify,
@@ -279,11 +281,11 @@ brand/model may be null if genuinely not identifiable. sizeClass: small|medium|l
   });
 
   const message = await anthropic.messages.create({
-    model: 'claude-haiku-4-5',
+    model: 'claude-sonnet-4-6',
     max_tokens: Math.min(120 * items.length + 200, 4096),
     messages: [{ role: 'user', content: contentBlocks }],
   });
-  if (tracker) logUsage(tracker, 'claude-haiku-4-5', message.usage, 'classify');
+  if (tracker) logUsage(tracker, 'claude-sonnet-4-6', message.usage, 'classify');
 
   let rawText = message.content[0].text.replace(/```json|```/g, '').trim();
   try { return JSON.parse(rawText); }
