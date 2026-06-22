@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "BidMax",
+    "slug": "bidmax",
+    "version": "1.0.0",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/d4cbd839-f0e3-491d-a6de-800e71300c4a"
+    },
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "backgroundColor": "#080d14"
+    },
+    "ios": {
+      "bundleIdentifier": "com.bidmax.app",
+      "supportsTablet": false,
+      "usesAppleSignIn": true,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.bidmax.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#22c55e"
+      }
+    },
+    "scheme": "bidmax",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-web-browser",
+      "expo-apple-authentication",
+      ["expo-notifications", { "color": "#22c55e" }]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d4cbd839-f0e3-491d-a6de-800e71300c4a"
+      }
+    }
+  }
+}

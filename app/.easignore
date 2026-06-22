@@ -1,0 +1,12 @@
+# Installed by EAS in the cloud — never upload these
+node_modules/
+
+# Generated native projects — let EAS prebuild fresh from app.json
+android/
+ios/
+
+# Local caches / build output
+.expo/
+dist/
+web-build/
+*.log
