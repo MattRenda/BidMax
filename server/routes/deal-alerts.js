@@ -111,6 +111,47 @@ function buildEmail(user, lot) {
   };
 }
 
+function buildGroupedEmail(user, lots) {
+  const unsubUrl = `${APP_LANDING}/unsubscribe?u=${encodeURIComponent(user.id)}`;
+  const count = lots.length;
+  const subject = count === 1
+    ? `🔥 ${lots[0].title.slice(0, 50)}`
+    : `🔥 ${count} Fire Deals Ending Soon`;
+
+  const lotSections = lots.map((lot, i) => {
+    const { maxBid, expectedProfit } = calcBid(lot.resell_value, user.target_margin, user.buyers_premium);
+    const mins = minutesLeft(lot.ends_at);
+    const divider = i < lots.length - 1
+      ? '<hr style="border:none;border-top:1px solid #e2e8f0;margin:24px 0;">'
+      : '';
+    return `
+      <p style="font-size:16px;font-weight:600;margin-bottom:8px;">${lot.title}</p>
+      ${lot.image_url ? `<img src="${lot.image_url}" alt="" style="width:100%;max-width:480px;border-radius:8px;margin-bottom:8px;">` : ''}
+      <table style="width:100%;font-size:15px;margin:8px 0 12px;">
+        <tr><td>Estimated resale</td><td style="text-align:right;font-weight:600;">$${Math.round(lot.resell_value)}</td></tr>
+        <tr><td>Current bid</td><td style="text-align:right;">$${Math.round(lot.current_bid)}</td></tr>
+        <tr><td>Your max bid</td><td style="text-align:right;font-weight:600;">$${maxBid}</td></tr>
+        <tr><td>Profit at your max</td><td style="text-align:right;color:#16a34a;font-weight:600;">$${expectedProfit}</td></tr>
+        <tr><td>Time left</td><td style="text-align:right;color:#dc2626;font-weight:600;">~${mins} min</td></tr>
+      </table>
+      <a href="${lot.item_url || APP_LANDING}" style="display:inline-block;background:#16a34a;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;">View Lot on BidRL</a>
+      ${divider}`;
+  }).join('');
+
+  const html = `
+    <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:0 auto;color:#0f172a;">
+      ${LOGO_URL ? `<div style="text-align:center;padding:8px 0 16px;"><img src="${LOGO_URL}" alt="BidMax" style="height:40px;"></div>` : ''}
+      <h2 style="color:#dc2626;">🔥 ${count === 1 ? 'Fire Deal Ending Soon' : `${count} Fire Deals Ending Soon`}</h2>
+      ${lotSections}
+      <p style="font-size:12px;color:#64748b;margin-top:24px;">
+        You're receiving this because you enabled Fire Deal alerts in BidMax.
+        <a href="${unsubUrl}">Unsubscribe</a><br>BidMax · ${APP_LANDING}
+      </p>
+    </div>`;
+
+  return { subject, html };
+}
+
 // Main entry — called by cron every ~15 min.
 // Send a TEST alert email on demand, bypassing the time-window and dedup checks.
 // Used by the /admin/test-alert endpoint to verify Resend delivery + rendering.
@@ -186,8 +227,9 @@ export async function sendFireDealAlerts() {
       const bp = s.buyers_premium ?? 15;
       const ft = s.fire_threshold ?? 50;
 
+      // Collect all qualifying lots for this user before sending anything
+      const fireLots = [];
       for (const lot of lots) {
-        // Flag using the EXACT app logic
         if (!isFireDeal(lot.resell_value, parseFloat(lot.current_bid) || 0, tm, bp, ft)) continue;
 
         // Dedup: skip if this user was already alerted for this lot
@@ -215,17 +257,24 @@ export async function sendFireDealAlerts() {
           continue;
         }
 
-        const { subject, html } = buildEmail({ ...user, target_margin: tm, buyers_premium: bp }, activeLot);
-        const sendResult = await sendEmail(user.email, subject, html);
-        if (sendResult.ok) {
+        fireLots.push(activeLot);
+      }
+
+      if (fireLots.length === 0) continue;
+
+      // One grouped email per user covering all their fire deals
+      const { subject, html } = buildGroupedEmail({ ...user, target_margin: tm, buyers_premium: bp }, fireLots);
+      const sendResult = await sendEmail(user.email, subject, html);
+      if (sendResult.ok) {
+        for (const lot of fireLots) {
           await supabase.from('deal_alerts_sent').insert({
             user_id: user.id, lot_number: lot.lot_number, sent_at: new Date().toISOString(),
           });
-          sent++;
         }
+        sent++;
       }
     }
-    console.log(`[Alerts] Sent ${sent} fire-deal alert(s).`);
+    console.log(`[Alerts] Sent ${sent} grouped fire-deal alert(s).`);
   } catch (e) {
     console.error('[Alerts] sendFireDealAlerts error:', e.message);
   }
