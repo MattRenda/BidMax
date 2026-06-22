@@ -119,7 +119,7 @@ Return ONLY valid JSON, no markdown:
 // ── BATCH analysis ──
 export async function analyzeBatch(req, res) {
   const { lots, settings, deviceId, sessionToken, fromCache, personalBypass } = req.body;
-  const isPersonalBypass = personalBypass === 'matthew-pro-bypass';
+  const isPersonalBypass = !!process.env.PERSONAL_BYPASS_TOKEN && personalBypass === process.env.PERSONAL_BYPASS_TOKEN;
   if (!lots || !Array.isArray(lots) || lots.length === 0) return res.status(400).json({ error: 'No lots provided.' });
 
   // Always check and increment usage for non-Pro users on every reveal

@@ -5,7 +5,13 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID_APP;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET_APP;
 const SERVER_URL = process.env.SERVER_URL || 'https://bidmax-development.up.railway.app';
 const CALLBACK_URL = `${SERVER_URL}/auth/google-mobile/callback`;
-const STATE_SECRET = process.env.SESSION_SECRET || 'bidmax-state-secret';
+// Fail closed: never fall back to a publicly-known constant (that would let anyone
+// forge the OAuth `state`). If SESSION_SECRET is unset, use an ephemeral per-process
+// secret and warn — set SESSION_SECRET so state stays valid across restarts/instances.
+const STATE_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+if (!process.env.SESSION_SECRET) {
+  console.warn('[auth-mobile] SESSION_SECRET not set — using an ephemeral per-process state secret. Set SESSION_SECRET in the environment.');
+}
 
 function signState(data) {
   const payload = JSON.stringify(data);

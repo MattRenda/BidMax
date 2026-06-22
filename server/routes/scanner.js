@@ -958,7 +958,7 @@ export async function getLocationRequests(req, res) {
 export async function revealLot(req, res) {
   const { lotNumber } = req.params;
   const { personalBypass } = req.query;
-  const isPersonalBypass = personalBypass === 'matthew-pro-bypass';
+  const isPersonalBypass = !!process.env.PERSONAL_BYPASS_TOKEN && personalBypass === process.env.PERSONAL_BYPASS_TOKEN;
 
   try {
     const token = req.headers.authorization?.replace('Bearer ', '') || req.query.sessionToken;
@@ -1008,6 +1008,10 @@ export async function revealLot(req, res) {
 }
 
 // GET /api/lot/:lotNumber — get single lot analysis from DB (no usage gate)
+// NOTE: returns the (paid) resell_value un-gated. Gating is HELD because the live
+// BidRL extension reads this endpoint; gating it would rate-limit free extension
+// users (esp. if they send no x-device-id). Re-do once the extension passes a
+// device id / Pro session — see memory: server-security-review (#2).
 export async function getLotAnalysis(req, res) {
   const { lotNumber } = req.params;
   try {

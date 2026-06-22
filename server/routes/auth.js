@@ -6,6 +6,26 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+// Accepted OAuth client IDs for tokens hitting /auth/google. A token's aud/azp
+// MUST match one of these — otherwise a Google token minted for ANY other client
+// could be replayed here to impersonate its owner. Add extras (e.g. the browser
+// extension's client) via GOOGLE_ALLOWED_CLIENT_IDS (comma-separated).
+const ALLOWED_GOOGLE_CLIENT_IDS = new Set(
+  [process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_ID_APP,
+   ...String(process.env.GOOGLE_ALLOWED_CLIENT_IDS || '').split(',')]
+    .map(s => (s || '').trim()).filter(Boolean)
+);
+// Enforcement is flag-gated for a safe rollout against the live extension: with
+// GOOGLE_AUD_ENFORCE unset/false (audit mode), a non-allowlisted token is LOGGED
+// but still accepted — so we can read the extension's real client id from the logs
+// without breaking its login. Add that id to GOOGLE_ALLOWED_CLIENT_IDS, then set
+// GOOGLE_AUD_ENFORCE=true to actually reject mismatches (that's when the hole closes).
+function audienceAllowed(aud, azp) {
+  if ((!!aud && ALLOWED_GOOGLE_CLIENT_IDS.has(aud)) || (!!azp && ALLOWED_GOOGLE_CLIENT_IDS.has(azp))) return true;
+  const enforcing = process.env.GOOGLE_AUD_ENFORCE === 'true';
+  console.warn('[auth] Google token audience not in allowlist:', { aud, azp, enforcing });
+  return !enforcing; // audit mode → allow (but logged); enforce mode → reject
+}
 const FREE_DAILY_LIMIT = 10;
 
 // Normalize raw DB user row to consistent shape
@@ -24,21 +44,32 @@ function normalizeUser(user) {
   };
 }
 
-// Verify Google token (handles both access tokens and ID tokens from chrome.identity)
+// Verify Google token (handles both access tokens and ID tokens from chrome.identity).
+// Both paths now validate the token's audience so a token issued for a different
+// OAuth client can't be replayed here to log in as its owner (confused-deputy).
 async function verifyGoogleToken(token) {
-  const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (userInfoRes.ok) {
-    const info = await userInfoRes.json();
-    if (!info.sub) throw new Error('Could not get user info from Google');
-    return { googleId: info.sub, email: info.email, name: info.name };
+  // ID-token path — tokeninfo verifies the signature + expiry and returns aud/azp.
+  const idRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(token)}`);
+  if (idRes.ok) {
+    const payload = await idRes.json();
+    if (Number(payload.exp) < Date.now() / 1000) throw new Error('Token expired');
+    if (!audienceAllowed(payload.aud, payload.azp)) throw new Error('Token audience not allowed');
+    if (!payload.sub) throw new Error('Invalid Google token');
+    return { googleId: payload.sub, email: payload.email, name: payload.name };
   }
-  const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${token}`);
-  if (!res.ok) throw new Error('Invalid Google token');
-  const payload = await res.json();
-  if (payload.exp < Date.now() / 1000) throw new Error('Token expired');
-  return { googleId: payload.sub, email: payload.email };
+  // Access-token path — validate the token's audience via tokeninfo BEFORE trusting
+  // the profile from userinfo (userinfo alone returns the owner regardless of aud).
+  const atRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`);
+  if (!atRes.ok) throw new Error('Invalid Google token');
+  const atInfo = await atRes.json();
+  if (!audienceAllowed(atInfo.aud, atInfo.azp)) throw new Error('Token audience not allowed');
+  const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!userInfoRes.ok) throw new Error('Could not get user info from Google');
+  const info = await userInfoRes.json();
+  if (!info.sub) throw new Error('Could not get user info from Google');
+  return { googleId: info.sub, email: info.email, name: info.name };
 }
 
 // ── Get or create user from Google ──

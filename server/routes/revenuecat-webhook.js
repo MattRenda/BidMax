@@ -11,8 +11,10 @@ const PRO_EVENTS = new Set([
 ]);
 
 export async function handleRevenueCatWebhook(req, res) {
-  // Verify webhook secret
-  if (req.headers.authorization !== process.env.REVENUECAT_WEBHOOK_SECRET) {
+  // Verify webhook secret — fail closed if it isn't configured, otherwise an unset
+  // env var makes `undefined === undefined` accept un-authenticated requests.
+  const expected = process.env.REVENUECAT_WEBHOOK_SECRET;
+  if (!expected || req.headers.authorization !== expected) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
