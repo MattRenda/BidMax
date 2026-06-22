@@ -24,7 +24,7 @@
       }
     },
     "android": {
-      "package": "com.bidmax.app",
+      "package": "com.bidmax",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#22c55e"
