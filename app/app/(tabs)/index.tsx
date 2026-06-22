@@ -52,7 +52,7 @@ export default function DealsScreen() {
   const [items, setItems] = useState<Listing[]>([]);
   const [affiliates, setAffiliates] = useState<Affiliate[]>([]);
   const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState({ pct: 0, msg: '' });
+  const [loadingMsg, setLoadingMsg] = useState('');
   const [showPicker, setShowPicker] = useState(false);
   const [sortMode, setSortMode] = useState<SortMode>('ending');
   const [scannedAll, setScannedAll] = useState(false);
@@ -299,15 +299,16 @@ export default function DealsScreen() {
   const canReveal = isPro || !usage || usage.limit == null || usage.used < usage.limit;
 
   // ── Loaders ──
-  const scanItems = async (affiliateValue: string) => {
-    setLoading(true); setItems([]); setLiveBids(new Map()); setScannedAll(false); setScanError(null); setPage(1);
+  const scanItems = async (affiliateValue: string, opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
+    setItems([]); setLiveBids(new Map()); setScannedAll(false); setScanError(null); setPage(1);
     track('scan_items', { affiliateId: affiliateValue });
     try {
       const settingsArg = { targetMargin: settings.targetMargin, buyersPremium: settings.buyersPremium };
 
       // One request for the whole location (server-side all=true) — covers search
       // and the item count without paging through dozens of slow requests.
-      setProgress({ pct: 60, msg: 'Loading items…' });
+      setLoadingMsg('Loading items…');
       const { items: all } = await fetchItems(affiliateValue, 1, settingsArg, { sessionToken: sessionToken || undefined, all: true });
 
       setItems(all);
@@ -318,7 +319,7 @@ export default function DealsScreen() {
     } catch (e: any) {
       setScanError(e?.message || 'Something went wrong loading items.');
     } finally {
-      setLoading(false); setProgress({ pct: 0, msg: '' });
+      setLoading(false); setLoadingMsg('');
     }
   };
 
@@ -372,16 +373,14 @@ export default function DealsScreen() {
   }, [isPro]);
 
   // ── Actions ──
-  // Pull-to-refresh: refetch the current view's first page without the full-screen
-  // overlay or clearing the list (the native pull spinner covers the feedback).
-  // Pull-to-refresh: reload the current view exactly like the initial load —
-  // ALL item pages (not just page 1), so the list and count stay consistent.
+  // Pull-to-refresh: reload all items for the current location like the initial
+  // load, but WITHOUT the full-screen overlay — the native pull spinner covers it.
   const onRefresh = async () => {
     const aff = settings.selectedAffiliate;
     if (!aff) return;
     setRefreshing(true);
     try {
-      await scanItems(aff);
+      await scanItems(aff, { silent: true });
     } catch (e: any) {
       Alert.alert('Refresh failed', e.message);
     } finally {
@@ -541,13 +540,11 @@ export default function DealsScreen() {
         )}
       </View>
 
-      {/* Loading overlay — centered text above a half-width bar */}
+      {/* Loading overlay — centered spinner with a status line */}
       {loading && (
         <View style={styles.progressOverlay} pointerEvents="none">
-          <Text style={styles.progressText}>{progress.msg}</Text>
-          <View style={styles.progressBg}>
-            <View style={[styles.progressFill, { width: `${progress.pct}%` }]} />
-          </View>
+          <ActivityIndicator color={colors.green} size="large" />
+          <Text style={styles.progressText}>{loadingMsg}</Text>
         </View>
       )}
 
@@ -839,8 +836,6 @@ const makeStyles = (c: Palette) => StyleSheet.create({
   segmentTextActive: { color: c.onPrimary },
   popupSegment: { flexDirection: 'row', backgroundColor: c.surface2, borderRadius: 12, padding: 4, gap: 4, marginHorizontal: 18, marginTop: 2, marginBottom: 8 },
   progressOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', gap: 16, paddingHorizontal: 48, zIndex: 10 },
-  progressBg: { width: '50%', backgroundColor: c.border, borderRadius: 4, height: 5, overflow: 'hidden' },
-  progressFill: { backgroundColor: c.green, height: 5, borderRadius: 4 },
   progressText: { color: c.text, fontSize: 14, fontWeight: '600', textAlign: 'center' },
   statsBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8 },
   statsText: { color: c.muted, fontSize: 12, fontWeight: '600' },

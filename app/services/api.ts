@@ -218,33 +218,6 @@ export async function fetchItems(
   };
 }
 
-// Pro pre-analyzed top picks (top 10 by resell value).
-export async function fetchTopPicks(
-  affiliateId: string,
-  settings: ScanSettings,
-  auth?: { sessionToken?: string },
-): Promise<Listing[]> {
-  const res = await fetchWithTimeout(`${SERVER_URL}/api/top-picks?affiliateId=${encodeURIComponent(affiliateId)}`, {
-    headers: auth?.sessionToken ? { Authorization: `Bearer ${auth.sessionToken}` } : undefined,
-  });
-  if (!res.ok) throw new Error(`Server error ${res.status}`);
-
-  const data = await res.json();
-  const list: any[] = Array.isArray(data) ? data : (data.picks ?? []);
-
-  const seen = new Set<string>();
-  const out: Listing[] = [];
-  for (const row of list) {
-    const listing = toAnalyzedListing(row, settings);
-    if (!listing) continue;
-    const key = listing.title.toLowerCase().trim();
-    if (key && seen.has(key)) continue;
-    seen.add(key);
-    out.push(listing);
-  }
-  return out.sort((a, b) => (b.saleValue ?? 0) - (a.saleValue ?? 0));
-}
-
 // On-demand single-lot analysis used by the FREE reveal flow. Returns the resale
 // value and counts against the daily limit server-side. Throws LimitReachedError
 // on HTTP 402.

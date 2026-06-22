@@ -50,17 +50,6 @@ export async function initPurchases(appUserId?: string): Promise<void> {
   } catch {}
 }
 
-export async function isProEntitled(): Promise<boolean> {
-  const Purchases = getSDK();
-  if (!Purchases || !configured) return false;
-  try {
-    const info = await Purchases.getCustomerInfo();
-    return !!info.entitlements.active[PRO_ENTITLEMENT];
-  } catch {
-    return false;
-  }
-}
-
 export type PurchaseResult = 'success' | 'cancelled';
 
 // Throws a descriptive Error for each failure so the cause is visible on-device.
