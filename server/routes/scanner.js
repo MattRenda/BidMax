@@ -479,7 +479,7 @@ When done, reply with ONLY this JSON object and nothing else:
     // a retail/shipping/unrelated price, which a blind $-scrape cannot.
     // priceFromComps expects: generic median = used resale; branded median = retail
     // (it then condition-converts). Preserve that contract.
-    let median = null, count = 0;
+    let median = null, count = 0, confidence = null;
     const jm = modelText.match(/\{[\s\S]*\}/);
     if (jm) {
       try {
@@ -487,6 +487,7 @@ When done, reply with ONLY this JSON object and nothing else:
         const retail = Number(p.retail_usd) || 0;
         const used = Number(p.used_resale_usd) || 0;
         count = parseInt(p.comp_count) || 0;
+        confidence = ['low','medium','high'].includes(p.confidence) ? p.confidence : null;
         const pick = isGeneric ? (used || retail) : (retail || used);
         if (pick > 0) median = pick;
       } catch {}
@@ -517,8 +518,8 @@ When done, reply with ONLY this JSON object and nothing else:
       return null;
     }
 
-    const result = { median: Math.round(median), isGeneric, count: count || 1 };
-    console.log(`[Scan] Comps "${queryBase}" → $${result.median} (${count} pts)`);
+    const result = { median: Math.round(median), isGeneric, count: count || 1, confidence };
+    console.log(`[Scan] Comps "${queryBase}" → $${result.median} (${count} pts${confidence ? ', ' + confidence : ''})`);
     searchCache.set(key, result);
     await writePersistentCache(key, result);
     return result;
@@ -600,21 +601,30 @@ function shouldSearch(tag) {
 // Convert a comp result + condition into a final FB resale number.
 function priceFromComps(comp, tag) {
   if (!comp || !comp.median) return null;
-  // If comps were generic (already "used sold" prices), they ARE the resale value.
-  // But web search can't guarantee sold-only data — some results may be retail
-  // asking prices, which skew high. Apply a conservative hedge so we don't
-  // overvalue (overpaying is worse for a reseller than missing a deal).
+  let resale;
+  // Generic comps are already "used sold" prices; hedge against retail/asking-price
+  // contamination (overpaying is worse for a reseller than missing a deal).
   if (comp.isGeneric) {
-    return Math.round(comp.median * 0.85);
+    resale = comp.median * 0.85;
+  } else {
+    // Branded comps are retail-anchored; convert to local FB resale by condition.
+    const cond = (tag.condition || 'used_good');
+    let factor;
+    if (cond.includes('new')) factor = 0.62;
+    else if (cond.includes('open')) factor = 0.55;
+    else if (cond.includes('good')) factor = 0.48;
+    else factor = 0.32; // used_fair / damaged
+    resale = comp.median * factor;
   }
-  // Branded comps mix new-retail and used; convert to local FB resale by condition.
-  const cond = (tag.condition || 'used_good');
-  let factor;
-  if (cond.includes('new')) factor = 0.62;
-  else if (cond.includes('open')) factor = 0.55;
-  else if (cond.includes('good')) factor = 0.48;
-  else factor = 0.32; // used_fair / damaged
-  return Math.round(comp.median * factor);
+  // Thin-data guard: a single data point (count<=1) or a low-confidence search is
+  // the model's best guess, not a real median — and those skew HIGH. Cap it by the
+  // classifier's own visual estimate so an inflated 1-point comp can't drive a bad bid.
+  const thin = (comp.count || 0) <= 1 || comp.confidence === 'low';
+  if (thin) {
+    const aiEst = Number(tag.estResale) || 0;
+    resale = aiEst > 0 ? Math.min(resale, aiEst * 0.85) : resale * 0.8;
+  }
+  return Math.round(resale);
 }
 
 // Last-resort heuristic when we have no comps at all.
