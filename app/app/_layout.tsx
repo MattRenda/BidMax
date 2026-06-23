@@ -7,6 +7,7 @@ import { ThemeProvider, useTheme } from '../hooks/useTheme';
 import { useSettings } from '../hooks/useSettings';
 import { initPurchases } from '../services/purchases';
 import { syncSettings } from '../services/auth';
+import { syncPushToken } from '../services/notifications';
 
 function RootNavigator() {
   const { user, loading, sessionToken } = useAuth();
@@ -29,6 +30,13 @@ function RootNavigator() {
     }, 800);
     return () => clearTimeout(t);
   }, [sessionToken, settings.targetMargin, settings.buyersPremium, settings.fireThreshold, settings.fireAlertsEnabled]);
+
+  // Register for push + upload the Expo token when signed in and fire alerts are
+  // on. Guarded — a safe no-op on builds without the expo-notifications native.
+  useEffect(() => {
+    if (!sessionToken || !settings.fireAlertsEnabled) return;
+    syncPushToken(sessionToken);
+  }, [sessionToken, settings.fireAlertsEnabled]);
 
   // Make the Android system nav bar transparent and match its button icons to
   // the theme so it blends into the app. (No-op on iOS, which has no nav buttons.)

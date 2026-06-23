@@ -280,13 +280,13 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        {/* Fire deal emails (Pro only) */}
+        {/* Fire deal alerts (Pro only) */}
         {!!user?.isPro && (
           <View style={styles.card}>
             <View style={styles.emailRow}>
               <View style={styles.emailText}>
-                <Text style={styles.label}>🔥 Fire deal emails</Text>
-                <Text style={styles.hint}>Get an email when a lot becomes a fire deal — worth bidding with profit above your threshold.</Text>
+                <Text style={styles.label}>🔥 Fire deal alerts</Text>
+                <Text style={styles.hint}>Get a push notification ~30 min before a fire deal ends — worth bidding with profit above your threshold.</Text>
               </View>
               <Switch
                 value={settings.fireAlertsEnabled}
