@@ -42,6 +42,24 @@ export async function syncSettings(req, res) {
   }
 }
 
+// POST /api/push-token — store a device's Expo push token for fire-deal alerts.
+export async function savePushToken(req, res) {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '') || req.body?.sessionToken;
+    const pushToken = req.body?.token;
+    const user = token ? await validateSession(token) : null;
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    if (typeof pushToken !== 'string' || !pushToken.startsWith('ExponentPushToken')) {
+      return res.status(400).json({ error: 'Invalid push token' });
+    }
+    await supabase.from('users').update({ expo_push_token: pushToken }).eq('id', user.id);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[Push] save token error:', e.message);
+    res.status(500).json({ error: 'Failed to save token' });
+  }
+}
+
 // GET /unsubscribe?u=USER_ID — one-click unsubscribe from fire-deal emails.
 // CAN-SPAM requires this to work without login.
 export async function unsubscribe(req, res) {

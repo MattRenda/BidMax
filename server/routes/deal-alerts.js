@@ -20,9 +20,15 @@ const APP_LANDING = 'https://bidmaxapp.com';
 // image URL (e.g. a Supabase storage URL or bidmaxapp.com/logo.png).
 const LOGO_URL = process.env.LOGO_URL || 'https://bidmaxapp.com/logo.png';
 
-// Only alert on lots ending within this window (seconds). 1 hour per spec.
-const ENDING_WINDIN_SEC = 60 * 60;
+// Notify when a lot is ending within this window. Spec: ~30 min before end.
+const ALERT_WINDOW_SEC = 30 * 60;
 const ROCKLIN_AFFILIATE = '75';
+// analyzed_lots.ends_at is the TRUE end time (the app's countdown uses it directly).
+// The old alert path re-subtracted a 2h offset and fired ~2h early — removed. If
+// BidRL ever reintroduces an offset, set this to that offset (e.g. 7200).
+const ENDS_AT_OFFSET_SEC = 0;
+// Expo push delivery endpoint.
+const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 
 // ── Fire-deal logic — ported VERBATIM from the app (services/api.ts) ──
 // Must stay identical to the client so the email flags exactly what the app
@@ -76,9 +82,7 @@ async function sendEmail(to, subject, html) {
 }
 
 function minutesLeft(endsAt) {
-  return Math.max(0, Math.round((endsAt - 2 * 3600 - Date.now() / 1000) / 60));
-  // note: ends_at is stored as raw bidrl end + 7200 (2h) offset elsewhere; we
-  // subtract it back out here to get true minutes remaining.
+  return Math.max(0, Math.round((endsAt - ENDS_AT_OFFSET_SEC - Date.now() / 1000) / 60));
 }
 
 function buildEmail(user, lot) {
@@ -187,19 +191,59 @@ export async function sendTestAlert(toEmail, lotNumber = null) {
   return { ok: sendResult.ok, id: sendResult.id || null, error: sendResult.error || null, from: FROM_EMAIL };
 }
 
+// Send Expo push messages (array). Returns true on a 2xx response.
+async function sendExpoPush(messages) {
+  if (!messages?.length) return false;
+  try {
+    const res = await fetch(EXPO_PUSH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(messages),
+    });
+    const json = await res.json().catch(() => ({}));
+    console.log('[Alerts] Expo push HTTP', res.status, '| response:', JSON.stringify(json).slice(0, 400));
+    return res.ok;
+  } catch (e) {
+    console.error('[Alerts] Expo push error:', e.message);
+    return false;
+  }
+}
+
+// Build ONE grouped push covering all of a user's fire deals — never a burst of
+// one-per-lot. Leads with the highest-value lot; the tap payload opens the app.
+function buildPushMessage(user, lots) {
+  const n = lots.length;
+  const top = lots.reduce((a, b) => (b.resell_value > a.resell_value ? b : a), lots[0]);
+  const mins = minutesLeft(top.ends_at);
+  const title = n === 1 ? '🔥 Fire deal ending soon' : `🔥 ${n} fire deals ending soon`;
+  const body = n === 1
+    ? `${top.title.slice(0, 90)} · ~${mins} min left`
+    : `Top: ${top.title.slice(0, 55)} +${n - 1} more · ending within ~${Math.round(ALERT_WINDOW_SEC / 60)} min`;
+  return {
+    to: user.expo_push_token,
+    sound: 'default',
+    priority: 'high',
+    badge: n,
+    title,
+    body,
+    data: { type: 'fire_deals', lots: lots.map(l => ({ lot: l.lot_number, url: l.item_url, title: l.title })) },
+  };
+}
+
 export async function sendFireDealAlerts() {
   console.log('[Alerts] Checking for fire deals ending soon...');
   try {
     const now = Math.floor(Date.now() / 1000);
-    const endWindowRaw = now + ENDING_WINDIN_SEC + 2 * 3600; // ends_at carries +2h offset
+    const windowStart = now + ENDS_AT_OFFSET_SEC;        // ends_at is the true end (offset 0)
+    const windowEnd = windowStart + ALERT_WINDOW_SEC;     // ending within ~30 min
 
     // 1) Active lots ending within the window (with a resale value to evaluate)
     const { data: lots } = await supabase
       .from('analyzed_lots')
       .select('lot_number, title, image_url, item_url, resell_value, current_bid, ends_at')
       .eq('affiliate_id', ROCKLIN_AFFILIATE)
-      .gt('ends_at', now + 2 * 3600)        // not already ended
-      .lt('ends_at', endWindowRaw)          // ending within ~1 hour
+      .gt('ends_at', windowStart)           // not already ended
+      .lt('ends_at', windowEnd)             // ending within ~30 min
       .gt('resell_value', 0);
 
     if (!lots || lots.length === 0) {
@@ -210,7 +254,7 @@ export async function sendFireDealAlerts() {
     // 2) Pro users who opted into fire alerts, with their synced settings
     const { data: users } = await supabase
       .from('users')
-      .select('id, email, is_pro, email_fire_alerts, user_settings(target_margin, buyers_premium, fire_threshold)')
+      .select('id, email, expo_push_token, is_pro, email_fire_alerts, user_settings(target_margin, buyers_premium, fire_threshold)')
       .eq('is_pro', true)
       .eq('email_fire_alerts', true);
 
@@ -252,7 +296,7 @@ export async function sendFireDealAlerts() {
 
         // If the lot was extended past the alert window, skip it — the next cron
         // run will alert when it's genuinely ending soon.
-        if (activeLot.ends_at >= endWindowRaw) {
+        if (activeLot.ends_at >= windowEnd) {
           console.log(`[Alerts] ${lot.lot_number} extended past alert window — skipping`);
           continue;
         }
@@ -262,10 +306,18 @@ export async function sendFireDealAlerts() {
 
       if (fireLots.length === 0) continue;
 
-      // One grouped email per user covering all their fire deals
-      const { subject, html } = buildGroupedEmail({ ...user, target_margin: tm, buyers_premium: bp }, fireLots);
-      const sendResult = await sendEmail(user.email, subject, html);
-      if (sendResult.ok) {
+      // ONE grouped alert per user. Prefer push (instant, in-app); fall back to
+      // email for users who haven't updated to a push-capable build yet.
+      const ctx = { ...user, target_margin: tm, buyers_premium: bp };
+      let ok = false;
+      if (user.expo_push_token) {
+        ok = await sendExpoPush([buildPushMessage(ctx, fireLots)]);
+      } else {
+        const { subject, html } = buildGroupedEmail(ctx, fireLots);
+        const r = await sendEmail(user.email, subject, html);
+        ok = !!r.ok;
+      }
+      if (ok) {
         for (const lot of fireLots) {
           await supabase.from('deal_alerts_sent').insert({
             user_id: user.id, lot_number: lot.lot_number, sent_at: new Date().toISOString(),
