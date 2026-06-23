@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useEffect } from 'react';
-import { View, Text, Image, TouchableOpacity, StyleSheet, ActivityIndicator, Linking, Animated } from 'react-native';
+import { View, Text, Image, TouchableOpacity, StyleSheet, ActivityIndicator, Animated } from 'react-native';
+import * as WebBrowser from 'expo-web-browser';
 import { useTheme } from '../hooks/useTheme';
 import { Palette } from '../services/theme';
 import { Listing, calcBid, isWorthBidding } from '../services/api';
@@ -56,10 +57,22 @@ export function DealCard({ item, rank, targetMargin, fireThreshold, analyzing, c
     Animated.timing(liveAnim, { toValue: isLive ? 1 : 0, duration: 250, useNativeDriver: true }).start();
   }, [isLive, liveAnim]);
 
+  // Open the BidRL lot in an in-app browser (SFSafariViewController / Chrome Custom
+  // Tabs) so the user's existing BidRL login carries over from the system browser —
+  // a sandboxed WebView would force them to log in again inside the sheet.
+  const openListing = () => {
+    if (!item.itemUrl) return;
+    WebBrowser.openBrowserAsync(item.itemUrl, {
+      toolbarColor: colors.surface,
+      controlsColor: colors.green,
+      dismissButtonStyle: 'close',
+    }).catch(() => {});
+  };
+
   return (
     <TouchableOpacity
       style={[styles.card, isHot && styles.cardHot, analyzed && !worth && styles.cardSkip]}
-      onPress={() => Linking.openURL(item.itemUrl)}
+      onPress={openListing}
       activeOpacity={0.85}
     >
       {isHot && (
