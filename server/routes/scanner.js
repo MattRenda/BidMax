@@ -233,6 +233,52 @@ async function fetchImageBase64(url) {
 // STEP 1 — CLASSIFIER (no pricing). Extract structured tags only.
 // AI is used here purely to identify and label, never to value.
 // ─────────────────────────────────────────────────────────────
+// JSON schema for structured outputs — guarantees the classifier returns valid,
+// parseable JSON so a single stray character can never drop a whole batch.
+const CLASSIFY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['lots'],
+  properties: {
+    lots: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['lotId','category','subtype','brand','model','sizeClass','keywords','condition','estResale','priceConfidence','idConfidence'],
+        properties: {
+          lotId: { type: 'string' },
+          category: { type: 'string', enum: ['electronics','appliance_large','appliance_small','furniture','tools','sporting_goods','gym_equipment','outdoor','toys','kitchenware','home_goods','apparel','health_beauty','automotive','media','collectible','bulk_lot','other'] },
+          subtype: { type: 'string' },
+          brand: { type: ['string','null'] },
+          model: { type: ['string','null'] },
+          sizeClass: { type: 'string', enum: ['small','medium','large'] },
+          keywords: { type: 'array', items: { type: 'string' } },
+          condition: { type: 'string', enum: ['new','open_box','used_good','used_fair'] },
+          estResale: { type: 'number' },
+          priceConfidence: { type: 'string', enum: ['high','medium','low'] },
+          idConfidence: { type: 'string', enum: ['high','medium','low'] },
+        },
+      },
+    },
+  },
+};
+
+// Robustly pull the lots array out of a classify response — handles the structured
+// {"lots":[...]} shape, a bare [...] (fallback path), and salvages a truncated
+// array rather than dropping the whole batch.
+function parseClassify(message) {
+  const txt = (message.content.find(b => b.type === 'text')?.text || '').replace(/```json|```/g, '').trim();
+  try { const p = JSON.parse(txt); if (Array.isArray(p)) return p; if (Array.isArray(p?.lots)) return p.lots; } catch {}
+  const start = txt.indexOf('[');
+  if (start >= 0) {
+    const frag = txt.slice(start);
+    const last = frag.lastIndexOf('}');
+    if (last > 0) { try { return JSON.parse(frag.slice(0, last + 1) + ']'); } catch {} }
+  }
+  return [];
+}
+
 async function classifyItems(items, imageData, tracker) {
   const lotsText = items.map(item => {
     const cleanTitle = item.title.replace(/[-–—]?\s*retail\s*\$?[\d,]+(\.\d+)?/gi, '').trim();
@@ -263,8 +309,8 @@ electronics, appliance_large, appliance_small, furniture, tools, sporting_goods,
 
 ${lotsText}
 
-Return ONLY a JSON array, one entry per lot, same order:
-[{"lotId":"RD1234","category":"outdoor","subtype":"rectangular frame pool","brand":"Intex","model":"14ft x 8ft x 3ft","sizeClass":"large","keywords":["pool","frame","14ft"],"condition":"new","estResale":230,"priceConfidence":"high","idConfidence":"high"}]
+Return a JSON object with a "lots" array — one entry per lot, in the same order:
+{"lots":[{"lotId":"RD1234","category":"outdoor","subtype":"rectangular frame pool","brand":"Intex","model":"14ft x 8ft x 3ft","sizeClass":"large","keywords":["pool","frame","14ft"],"condition":"new","estResale":230,"priceConfidence":"high","idConfidence":"high"}]}
 
 estResale: your best estimate of the item's USED resale value in dollars on Facebook Marketplace, given its condition. A whole number.
 priceConfidence: how sure you are of estResale. Be honest and conservative — only use "high" when you genuinely know what this item sells for. "high" = either a clearly-identified product whose resale value you know well (known brand+model), OR a generic item in a category with a tight, predictable used price (e.g. a standard 6-drawer dresser). "medium" = recognizable but value varies a lot by model/spec you can't fully pin down. "low" = you are essentially guessing. If you cannot tell exactly what the item is AND its category price varies widely, you must use "low" — do not claim high price confidence for an item you can't identify.
@@ -280,22 +326,28 @@ brand/model may be null if genuinely not identifiable. sizeClass: small|medium|l
     }
   });
 
-  const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: Math.min(120 * items.length + 200, 4096),
-    messages: [{ role: 'user', content: contentBlocks }],
-  });
-  if (tracker) logUsage(tracker, 'claude-sonnet-4-6', message.usage, 'classify');
-
-  let rawText = message.content[0].text.replace(/```json|```/g, '').trim();
-  try { return JSON.parse(rawText); }
-  catch {
-    const lastBrace = rawText.lastIndexOf('}');
-    if (lastBrace > 0) {
-      try { return JSON.parse(rawText.slice(0, lastBrace + 1) + ']'); } catch {}
-    }
-    return [];
+  const maxTok = Math.min(150 * items.length + 300, 4096);
+  let message;
+  try {
+    // Structured outputs → guaranteed valid JSON matching CLASSIFY_SCHEMA.
+    message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: maxTok,
+      messages: [{ role: 'user', content: contentBlocks }],
+      output_config: { format: { type: 'json_schema', schema: CLASSIFY_SCHEMA } },
+    });
+  } catch (e) {
+    // Fail safe: if structured outputs is rejected for any reason, fall back to the
+    // plain call (the prompt already requests the same shape) so scans never stall.
+    console.error('[Scan] classify structured-output failed, falling back to plain:', e.message);
+    message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: maxTok,
+      messages: [{ role: 'user', content: contentBlocks }],
+    });
   }
+  if (tracker) logUsage(tracker, 'claude-sonnet-4-6', message.usage, 'classify');
+  return parseClassify(message);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -394,53 +446,79 @@ async function searchComps(tag, tracker) {
 
   const isGeneric = !(tag.brand && tag.model);
   const prompt = isGeneric
-    ? `Find the resale value of a ${queryBase} (condition: ${tag.condition || 'used'}). Search Facebook Marketplace, eBay sold listings, and Craigslist for what these ACTUALLY SELL FOR used. Report the typical selling price range, not new retail.`
-    : `Find pricing for the ${queryBase}. Report (1) current NEW retail price on Amazon/Walmart, and (2) USED resale value from eBay sold listings or Facebook Marketplace. Give both numbers if available.`;
+    ? `Search Facebook Marketplace, eBay SOLD listings, and Craigslist for what a "${queryBase}" (condition: ${tag.condition || 'used'}) ACTUALLY SELLS FOR used locally. Ignore brand-new retail prices, shipping costs, and unrelated items — focus on realized USED sale prices.
+
+When done, reply with ONLY this JSON object and nothing else:
+{"used_resale_usd": <typical used selling price as a number, or null if unknown>, "retail_usd": <new retail price as a number, or null>, "comp_count": <how many real price data points you found>, "confidence": "high|medium|low"}`
+    : `Search for the "${queryBase}". Find (1) the current NEW retail price (Amazon/Walmart) and (2) the typical USED resale value from eBay SOLD listings or Facebook Marketplace. Ignore shipping costs and unrelated items.
+
+When done, reply with ONLY this JSON object and nothing else:
+{"retail_usd": <current new retail price as a number, or null>, "used_resale_usd": <typical used resale price as a number, or null>, "comp_count": <how many real price data points you found>, "confidence": "high|medium|low"}`;
 
   try {
     const resp = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
-      max_tokens: 700,
+      max_tokens: 1024,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
       messages: [{ role: 'user', content: prompt }],
     });
     if (tracker) logUsage(tracker, 'claude-haiku-4-5-20251001', resp.usage, 'search');
 
-    const allText = resp.content
-      .map(b => {
-        if (b.type === 'text') return b.text;
-        if (b.type === 'web_search_tool_result') {
-          if (typeof b.content === 'string') return b.content;
-          if (Array.isArray(b.content)) return b.content.map(c => c.text || '').join(' ');
+    // Separate the model's own text (holds the JSON summary) from raw search-result
+    // text (used only as a regex fallback).
+    let modelText = '', toolText = '';
+    for (const b of resp.content) {
+      if (b.type === 'text') modelText += ' ' + b.text;
+      else if (b.type === 'web_search_tool_result') {
+        if (typeof b.content === 'string') toolText += ' ' + b.content;
+        else if (Array.isArray(b.content)) toolText += ' ' + b.content.map(c => c.text || '').join(' ');
+      }
+    }
+
+    // Primary: trust the model's synthesized number — it can tell a sold comp from
+    // a retail/shipping/unrelated price, which a blind $-scrape cannot.
+    // priceFromComps expects: generic median = used resale; branded median = retail
+    // (it then condition-converts). Preserve that contract.
+    let median = null, count = 0;
+    const jm = modelText.match(/\{[\s\S]*\}/);
+    if (jm) {
+      try {
+        const p = JSON.parse(jm[0]);
+        const retail = Number(p.retail_usd) || 0;
+        const used = Number(p.used_resale_usd) || 0;
+        count = parseInt(p.comp_count) || 0;
+        const pick = isGeneric ? (used || retail) : (retail || used);
+        if (pick > 0) median = pick;
+      } catch {}
+    }
+
+    // Fallback: if the model gave no usable number, scrape prices from the raw search
+    // text (old behavior) so a parse miss never loses comp data.
+    if (median === null) {
+      const prices = [...(modelText + ' ' + toolText).matchAll(/\$([0-9,]+(?:\.[0-9]{1,2})?)/g)]
+        .map(m => parseFloat(m[1].replace(/,/g, '')))
+        .filter(p => p > 3 && p < 15000)
+        .sort((a, b) => a - b);
+      if (prices.length) {
+        let trimmed = prices;
+        if (prices.length >= 6) {
+          const cut = Math.floor(prices.length * 0.1);
+          trimmed = prices.slice(cut, prices.length - cut);
         }
-        return '';
-      })
-      .join(' ');
+        const mid = Math.floor(trimmed.length / 2);
+        median = trimmed.length % 2 === 0 ? (trimmed[mid - 1] + trimmed[mid]) / 2 : trimmed[mid];
+        count = prices.length;
+      }
+    }
 
-    const prices = [...allText.matchAll(/\$([0-9,]+(?:\.[0-9]{1,2})?)/g)]
-      .map(m => parseFloat(m[1].replace(/,/g, '')))
-      .filter(p => p > 3 && p < 15000);
-
-    if (prices.length === 0) {
+    if (median === null || median <= 0) {
       searchCache.set(key, null);
       await writePersistentCache(key, null); // remember the miss so we don't re-search
       return null;
     }
 
-    prices.sort((a, b) => a - b);
-    // Trim outliers: drop top and bottom 10% when we have enough points
-    let trimmed = prices;
-    if (prices.length >= 6) {
-      const cut = Math.floor(prices.length * 0.1);
-      trimmed = prices.slice(cut, prices.length - cut);
-    }
-    const mid = Math.floor(trimmed.length / 2);
-    const median = trimmed.length % 2 === 0
-      ? (trimmed[mid - 1] + trimmed[mid]) / 2
-      : trimmed[mid];
-
-    const result = { median: Math.round(median), isGeneric, count: prices.length };
-    console.log(`[Scan] Comps "${queryBase}" → $${result.median} (${prices.length} pts: ${prices.slice(0,6).join(', ')})`);
+    const result = { median: Math.round(median), isGeneric, count: count || 1 };
+    console.log(`[Scan] Comps "${queryBase}" → $${result.median} (${count} pts)`);
     searchCache.set(key, result);
     await writePersistentCache(key, result);
     return result;
