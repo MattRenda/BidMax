@@ -28,7 +28,7 @@ const BUDGETED_SEARCH_COST = (WEB_SEARCH_TOOL_COST + 0.01) * COST_UNDERCOUNT_FAC
 function makeCostTracker() {
   return {
     classifyCalls: 0, classifyInTok: 0, classifyOutTok: 0,
-    searchCalls: 0, searchInTok: 0, searchOutTok: 0, searchCacheHits: 0,
+    searchCalls: 0, searchRequests: 0, searchInTok: 0, searchOutTok: 0, searchCacheHits: 0,
     imagesFullRes: 0, imagesThumb: 0, imagesFailed: 0,
     itemsClassified: 0, itemsSearched: 0, itemsHeuristic: 0, itemsAiPriced: 0,
   };
@@ -44,6 +44,7 @@ function logUsage(tracker, model, usage, kind) {
     tracker.classifyOutTok += outTok;
   } else if (kind === 'search') {
     tracker.searchCalls++;
+    tracker.searchRequests += (usage.server_tool_use?.web_search_requests || 0);
     tracker.searchInTok += inTok;
     tracker.searchOutTok += outTok;
   }
@@ -54,7 +55,7 @@ function estCost(tracker) {
   const ch = PRICING['claude-haiku-4-5'];
   const classify = tracker.classifyInTok * cs.in + tracker.classifyOutTok * cs.out;
   const searchTok = tracker.searchInTok * ch.in + tracker.searchOutTok * ch.out;
-  const searchTool = tracker.searchCalls * WEB_SEARCH_TOOL_COST;
+  const searchTool = (tracker.searchRequests || tracker.searchCalls) * WEB_SEARCH_TOOL_COST;
   return {
     classify,
     search: searchTok + searchTool,
@@ -116,7 +117,8 @@ function printCostReport(tracker, affiliateId, newCount) {
 ║   cost:              $${cost.classify.toFixed(4)}  (${pct(cost.classify)}%)
 ║
 ║ WEB SEARCH (comps):
-║   calls:             ${tracker.searchCalls}
+║   calls (items):     ${tracker.searchCalls}
+║   web_search reqs:   ${tracker.searchRequests}  (avg ${tracker.searchCalls ? (tracker.searchRequests / tracker.searchCalls).toFixed(1) : 0}/item)
 ║   cache hits saved:  ${tracker.searchCacheHits}
 ║   input tokens:      ${tracker.searchInTok.toLocaleString()}
 ║   output tokens:     ${tracker.searchOutTok.toLocaleString()}
@@ -459,7 +461,7 @@ When done, reply with ONLY this JSON object and nothing else:
     const resp = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
-      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }],
       messages: [{ role: 'user', content: prompt }],
     });
     if (tracker) logUsage(tracker, 'claude-haiku-4-5-20251001', resp.usage, 'search');
@@ -896,6 +898,10 @@ async function scanAffiliate(affiliateId, maxItems = null) {
         }
       } catch(e) {
         console.error(`[Scan] Batch error:`, e.message);
+        if (/credit balance|usage limit|specified API usage/i.test(e.message || '')) {
+          console.error('[Scan] ⛔ Anthropic quota/credits exhausted — aborting remaining batches. Top up credits or raise the usage limit.');
+          break;
+        }
       }
 
       if (i + BATCH_SIZE < newItems.length) await new Promise(r => setTimeout(r, 3000));
