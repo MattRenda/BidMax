@@ -13,7 +13,7 @@ import { getAffiliates, getItems as getBidrlItems, getLiveBid } from './routes/b
 import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
 import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems, requestLocation, getLocationRequests, revealLot, refreshBidsForAffiliate } from './routes/scanner.js';
 import { postDailyFind } from './routes/fb-daily-post.js';
-import { syncSettings, unsubscribe, savePushToken } from './routes/settings-sync.js';
+import { syncSettings, unsubscribe, savePushToken, getUsageStatus } from './routes/settings-sync.js';
 import { sendTestAlert, sendFireDealAlerts } from './routes/deal-alerts.js';
 import { handleRevenueCatWebhook } from './routes/revenuecat-webhook.js';
 import { startPusherListener, registerSseClient, unregisterSseClient } from './routes/pusher-listener.js';
@@ -70,6 +70,7 @@ app.get('/api/top-picks', getTopPicks);
 app.get('/api/items', getItems);
 app.post('/api/settings', syncSettings);
 app.post('/api/push-token', savePushToken);
+app.get('/api/usage', getUsageStatus);
 app.get('/unsubscribe', unsubscribe);
 app.get('/api/reveal/:lotNumber', revealLot);   // usage-gated reveal for free users
 app.get('/api/lot/:lotNumber', getLotAnalysis);  // no usage gate (Pro / internal)

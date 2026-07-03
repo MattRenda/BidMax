@@ -127,6 +127,26 @@ export async function fetchUsage(sessionToken: string): Promise<Usage | null> {
   return { used: Number(used) || 0, limit: limit == null ? null : Number(limit) };
 }
 
+// Current usage for the day by device id — works for anonymous free users, whose
+// count is device-tracked and not readable via /auth/me (which needs a session).
+// Sends the session too when signed in so the server can resolve Pro/unlimited.
+export async function fetchUsageByDevice(sessionToken?: string): Promise<Usage | null> {
+  try {
+    const deviceId = await getDeviceId();
+    const res = await fetch(`${SERVER_URL}/api/usage`, {
+      headers: {
+        'X-Device-Id': deviceId,
+        ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+      },
+    });
+    if (!res.ok) return null;
+    const d = await res.json();
+    return { used: Number(d.used) || 0, limit: d.limit == null ? null : Number(d.limit) };
+  } catch {
+    return null;
+  }
+}
+
 // The server may return the session token as a plain string OR as the full
 // session row ({ token, ... }). Accept either and return the token string.
 function extractSessionToken(v: any): string | undefined {

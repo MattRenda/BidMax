@@ -17,7 +17,7 @@ import { useTheme } from '../../hooks/useTheme';
 import { Palette } from '../../services/theme';
 import { useAuth } from '../../hooks/useAuth';
 import { useSettings } from '../../hooks/useSettings';
-import { fetchUsage, Usage } from '../../services/auth';
+import { fetchUsageByDevice, Usage } from '../../services/auth';
 import { track } from '../../services/analytics';
 import { SERVER_URL } from '../../services/config';
 import { DealCard } from '../../components/DealCard';
@@ -93,8 +93,7 @@ export default function DealsScreen() {
   }, []);
 
   const refreshUsage = useCallback(async () => {
-    if (!sessionToken) return;
-    const u = await fetchUsage(sessionToken);
+    const u = await fetchUsageByDevice(sessionToken || undefined);
     if (u) setUsage(u);
   }, [sessionToken]);
 

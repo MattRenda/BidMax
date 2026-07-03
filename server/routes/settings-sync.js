@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { validateSession } from './auth.js';
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+const FREE_DAILY_LIMIT = 10;
 
 // POST /api/settings — client syncs the user's settings up so the server can
 // compute fire deals. Body: { sessionToken, targetMargin, buyersPremium,
@@ -57,6 +58,33 @@ export async function savePushToken(req, res) {
   } catch (e) {
     console.error('[Push] save token error:', e.message);
     res.status(500).json({ error: 'Failed to save token' });
+  }
+}
+
+// GET /api/usage — read-only daily analysis usage {used, limit} for the current
+// device (or session). Lets anonymous free users see their true count on app
+// open; previously only a reveal (which sends the device id) returned it.
+export async function getUsageStatus(req, res) {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const token = req.headers.authorization?.replace('Bearer ', '') || req.query.sessionToken;
+    const deviceId = req.headers['x-device-id'] || req.query.deviceId;
+
+    // Pro users are unlimited regardless of device.
+    if (token) {
+      const user = await validateSession(token);
+      if (user?.is_pro) return res.json({ used: 0, limit: null });
+    }
+    // Free usage is tracked by device id (the same key checkAndIncrementUsage writes).
+    if (deviceId) {
+      const { data } = await supabase.from('usage').select('batch_count')
+        .eq('device_id', deviceId).eq('date', today).maybeSingle();
+      return res.json({ used: data?.batch_count || 0, limit: FREE_DAILY_LIMIT });
+    }
+    return res.json({ used: 0, limit: FREE_DAILY_LIMIT });
+  } catch (e) {
+    console.error('[Usage] status error:', e.message);
+    res.status(500).json({ error: 'Failed to read usage' });
   }
 }
 
