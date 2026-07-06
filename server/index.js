@@ -115,8 +115,14 @@ async function loadAuthRoutes() {
     app.post('/auth/logout', logout);
     app.delete('/auth/me', deleteAccount);
 
-    // POST /auth/demo — one-tap demo login for App Review. No credentials, no rate limit.
+    // POST /auth/demo — RETIRED from the public UI (the sign-in button is gone and
+    // anonymous browsing covers App Review). Kept, not deleted, but gated behind the
+    // admin secret so it is NOT publicly usable: a request without the secret 404s.
+    // Re-enable for review with ?secret=<ADMIN_SECRET> (or x-admin-secret header).
+    // The demo@bidmaxapp.com user row is intentionally preserved.
     app.post('/auth/demo', async (req, res) => {
+      const secret = req.headers['x-admin-secret'] || req.query.secret;
+      if (secret !== process.env.ADMIN_SECRET) return res.status(404).json({ error: 'Not found' });
       try {
         const DEMO_EMAIL = 'demo@bidmaxapp.com';
         let { data: user } = await supabase
@@ -139,6 +145,7 @@ async function loadAuthRoutes() {
         res.status(500).json({ error: String(e?.stack || e?.message || e) });
       }
     });
+
     app.post('/billing/checkout', createCheckout);
     app.post('/billing/portal', createPortal);
     app.post('/billing/webhook', handleWebhook);
