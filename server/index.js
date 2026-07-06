@@ -16,7 +16,7 @@ import { postDailyFind } from './routes/fb-daily-post.js';
 import { syncSettings, unsubscribe, savePushToken, getUsageStatus } from './routes/settings-sync.js';
 import { sendTestAlert, sendFireDealAlerts } from './routes/deal-alerts.js';
 import { handleRevenueCatWebhook } from './routes/revenuecat-webhook.js';
-import { startPusherListener, registerSseClient, unregisterSseClient } from './routes/pusher-listener.js';
+import { startPusherListener, registerSseClient, unregisterSseClient, getLocationBidders } from './routes/pusher-listener.js';
 import './cron.js';
 
 dotenv.config();
@@ -102,6 +102,9 @@ app.get('/api/bid-stream', (req, res) => {
   registerSseClient(res);
   req.on('close', () => { clearInterval(heartbeat); unregisterSseClient(res); });
 });
+
+// How many distinct bidders we've observed at a location (subscriber-funnel sizing).
+app.get('/api/location-bidders', getLocationBidders);
 
 // Auth + billing routes — load lazily so startup errors don't kill the server
 async function loadAuthRoutes() {

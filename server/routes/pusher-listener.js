@@ -24,7 +24,7 @@ export function unregisterSseClient(res) {
   sseClients.delete(res);
 }
 
-async function handleBidEvent(lotNumber, data) {
+async function handleBidEvent(lotNumber, data, affiliateId) {
   try {
     const item = typeof data === 'string' ? JSON.parse(data) : data;
     const bidData = item.item || item;
@@ -50,6 +50,21 @@ async function handleBidEvent(lotNumber, data) {
         .eq('lot_number', lotNumber)
         .lt('current_bid', newBid);
       if (!error) console.log(`[Pusher] Bid update: ${lotNumber} -> $${newBid}${winnerName ? ` (winner: ${winnerName})` : ''}`);
+
+      // Roster this bidder for subscriber-funnel sizing. Every distinct
+      // highbidder_username we ever see at a location accumulates in
+      // location_bidders (de-duped); times_led counts how often they took the
+      // lead — an engagement signal. Fire-and-forget so it never delays the bid
+      // path. NOTE: this is a FLOOR on the crowd — we only see bidders who led a
+      // lot, never pure watchers or under-bidders.
+      if (winnerName && affiliateId != null) {
+        supabase.rpc('record_location_bidder', {
+          p_affiliate_id: String(affiliateId),
+          p_username: winnerName,
+        }).then(({ error: rpcErr }) => {
+          if (rpcErr) console.error('[Pusher] record_location_bidder:', rpcErr.message);
+        });
+      }
     }
 
     // End time can change (auction extensions) — safe to refresh unconditionally.
@@ -77,11 +92,11 @@ async function handleBidEvent(lotNumber, data) {
   }
 }
 
-function subscribeToItem(itemId, lotNumber) {
+function subscribeToItem(itemId, lotNumber, affiliateId) {
   if (!pusherClient || subscribedChannels.has(itemId)) return;
   const channelName = `www.bidrl.com-item-${itemId}`;
   const channel = pusherClient.subscribe(channelName);
-  channel.bind('bid', (data) => handleBidEvent(lotNumber, data));
+  channel.bind('bid', (data) => handleBidEvent(lotNumber, data, affiliateId));
   subscribedChannels.set(itemId, channel);
 }
 
@@ -99,7 +114,7 @@ async function syncSubscriptions() {
     const now = Math.floor(Date.now() / 1000);
     const { data: activeItems } = await supabase
       .from('analyzed_lots')
-      .select('item_id, lot_number, ends_at')
+      .select('item_id, lot_number, ends_at, affiliate_id')
       .not('item_id', 'is', null)
       .gt('ends_at', now);
 
@@ -113,7 +128,7 @@ async function syncSubscriptions() {
     // Subscribe to all active items (no cap — matches prior working behavior)
     for (const item of wanted) {
       if (!subscribedChannels.has(item.item_id)) {
-        subscribeToItem(item.item_id, item.lot_number);
+        subscribeToItem(item.item_id, item.lot_number, item.affiliate_id);
       }
     }
     console.log(`[Pusher] Subscribed to ${subscribedChannels.size} item channels`);
@@ -160,5 +175,44 @@ export async function startPusherListener() {
   // Single re-sync interval, created exactly once — reconciles new/ended items.
   if (!syncInterval) {
     syncInterval = setInterval(syncSubscriptions, 15 * 60 * 1000);
+  }
+}
+
+// GET /api/location-bidders?affiliateId=75[&days=30][&list=1]
+// Subscriber-funnel sizing: how many distinct bidders we've observed taking the
+// lead at a location. `days` limits to bidders active in the last N days (omit
+// for all-time). `list=1` also returns the roster (top by times_led).
+// Reminder: this is a FLOOR — pure watchers and under-bidders are invisible to us.
+export async function getLocationBidders(req, res) {
+  // Admin-gated: returns BidRL usernames, so keep it out of public reach.
+  const secret = req.headers['x-admin-secret'] || req.query.secret;
+  if (secret !== process.env.ADMIN_SECRET) return res.status(404).json({ error: 'Not found' });
+  const affiliateId = req.query.affiliateId;
+  if (!affiliateId) return res.status(400).json({ error: 'affiliateId required' });
+  const days = Math.max(0, parseInt(req.query.days) || 0);
+  const wantList = req.query.list === '1' || req.query.list === 'true';
+  try {
+    let query = supabase
+      .from('location_bidders')
+      .select('username, first_seen, last_seen, times_led', { count: 'exact' })
+      .eq('affiliate_id', String(affiliateId))
+      .order('times_led', { ascending: false });
+    if (days > 0) {
+      const since = new Date(Date.now() - days * 86400000).toISOString();
+      query = query.gte('last_seen', since);
+    }
+    // We only need the exact count unless the caller wants the roster.
+    query = query.range(0, wantList ? 999 : 0);
+    const { data, count, error } = await query;
+    if (error) throw error;
+    res.json({
+      affiliateId: String(affiliateId),
+      windowDays: days || null,
+      uniqueBidders: count || 0,
+      ...(wantList ? { bidders: data || [] } : {}),
+    });
+  } catch (e) {
+    console.error('[LocationBidders] error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 }
