@@ -569,8 +569,17 @@ const AI_TRUST_CEILING_GENERIC  = 80;
 // to justify the search cost. Heuristic or AI estimate is sufficient.
 const NO_SEARCH_CATEGORIES = new Set(['apparel', 'media', 'health_beauty', 'collectible']);
 
+// A lot that is only PART of a multi-box/multi-piece item — "1 of 2 boxes",
+// "box 2 of 3", "part 1 of 2", "2 of 2 cartons". A single box can't be resold as a
+// complete item, so its resale value is ~$0; pricing it as a whole item creates
+// false fire deals. Detected from the title and zeroed out when building results.
+const PARTIAL_LOT_RE = /\b(?:box|boxes|part|parts|piece|pieces|pc|pcs|carton|cartons|ctn)\s*\d+\s*of\s*\d+\b|\b\d+\s*of\s*\d+\s*(?:box|boxes|part|parts|piece|pieces|pc|pcs|carton|cartons|ctn)\b/i;
+function isPartialLot(title) { return !!title && PARTIAL_LOT_RE.test(title); }
+
 function shouldSearch(tag) {
   if (!tag) return false;
+  // Don't spend a comp search on a partial/multi-box lot — it gets zeroed anyway.
+  if (isPartialLot(tag._title)) return false;
   const est = Number(tag.estResale) || 0;
   const isBranded = !!(tag.brand && tag.model);
 
@@ -600,6 +609,13 @@ function shouldSearch(tag) {
   return est >= 40;
 }
 
+// A thin comp (single data point or low confidence) can grab a new-retail or
+// unrelated price, so it is guarded — but only against INFLATION. We cap it at this
+// multiple of the classifier's own estResale instead of snapping it DOWN to that
+// estimate. Snapping down (the old est*0.85 cap) dragged legitimately-higher comps
+// onto the same round anchor, so unrelated items collapsed to identical prices.
+const THIN_COMP_CEILING = 1.3;
+
 // Convert a comp result + condition into a final FB resale number.
 function priceFromComps(comp, tag) {
   if (!comp || !comp.median) return null;
@@ -618,13 +634,15 @@ function priceFromComps(comp, tag) {
     else factor = 0.32; // used_fair / damaged
     resale = comp.median * factor;
   }
-  // Thin-data guard: a single data point (count<=1) or a low-confidence search is
-  // the model's best guess, not a real median — and those skew HIGH. Cap it by the
-  // classifier's own visual estimate so an inflated 1-point comp can't drive a bad bid.
+  // Thin-data guard (anti-inflation only): a single data point (count<=1) or a
+  // low-confidence search skews HIGH — a lone comp can be a new-retail or unrelated
+  // price. Cap it at THIN_COMP_CEILING × the classifier's estResale so an inflated
+  // comp can't drive a bad bid — but DON'T snap it down to the estimate, which would
+  // pull reasonable comps onto a shared round anchor (unrelated items → identical $).
   const thin = (comp.count || 0) <= 1 || comp.confidence === 'low';
   if (thin) {
     const aiEst = Number(tag.estResale) || 0;
-    resale = aiEst > 0 ? Math.min(resale, aiEst * 0.85) : resale * 0.8;
+    resale = aiEst > 0 ? Math.min(resale, aiEst * THIN_COMP_CEILING) : resale * 0.8;
   }
   return Math.round(resale);
 }
@@ -729,9 +747,18 @@ async function analyzeBatchWithVision(items, tracker) {
       }
     }
 
+    // Partial/multi-box lots ("1 of 2 boxes", "box 2 of 3") aren't a complete,
+    // resellable item — zero the resale so they aren't shown or fire-flagged as a
+    // deal (getItems filters resell_value > 0). Overrides whatever was computed.
+    if (isPartialLot(item.title)) {
+      resale = 0;
+      source = 'partial-lot';
+    }
+
     const label = [tag.brand, tag.model].filter(Boolean).join(' ') || tag.subtype || tag.category || item.title.slice(0, 50);
+    const compThin = comps[i] && ((comps[i].count || 0) <= 1 || comps[i].confidence === 'low');
     const compNote = comps[i]
-      ? `${comps[i].isGeneric ? 'generic-comp' : 'branded-comp'} median $${comps[i].median} (${comps[i].count} pts)`
+      ? `${comps[i].isGeneric ? 'generic-comp' : 'branded-comp'} median $${comps[i].median} (${comps[i].count} pts${compThin ? ', thin' : ''})`
       : (source.startsWith('ai') ? 'AI price (no search needed)' : 'no comps');
 
     return {
