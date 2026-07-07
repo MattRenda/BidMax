@@ -276,16 +276,7 @@ export async function sendFireDealAlerts() {
       for (const lot of lots) {
         if (!isFireDeal(lot.resell_value, parseFloat(lot.current_bid) || 0, tm, bp, ft)) continue;
 
-        // Dedup: skip if this user was already alerted for this lot
-        const { data: already } = await supabase
-          .from('deal_alerts_sent')
-          .select('id')
-          .eq('user_id', user.id)
-          .eq('lot_number', lot.lot_number)
-          .maybeSingle();
-        if (already) continue;
-
-        // Re-fetch ends_at and current_bid so the email reflects any Pusher
+        // Re-fetch ends_at and current_bid so the alert reflects any Pusher
         // soft-close extension that arrived after the bulk query above.
         const { data: fresh } = await supabase
           .from('analyzed_lots')
@@ -300,6 +291,21 @@ export async function sendFireDealAlerts() {
           console.log(`[Alerts] ${lot.lot_number} extended past alert window — skipping`);
           continue;
         }
+
+        // Atomically CLAIM this (user, lot) BEFORE sending. upsert + ignoreDuplicates
+        // runs INSERT ... ON CONFLICT DO NOTHING; .select() returns a row ONLY if
+        // THIS run inserted it. If empty, another cron run — or a second server
+        // instance during a deploy — already claimed it, so skip. This is what kills
+        // the DUPLICATE fire-deal pushes (the old select-then-insert had a race that
+        // could double-send). Requires a unique index on (user_id, lot_number).
+        const { data: claimed } = await supabase
+          .from('deal_alerts_sent')
+          .upsert(
+            { user_id: user.id, lot_number: lot.lot_number, sent_at: new Date().toISOString() },
+            { onConflict: 'user_id,lot_number', ignoreDuplicates: true }
+          )
+          .select('lot_number');
+        if (!claimed || claimed.length === 0) continue; // already claimed elsewhere
 
         fireLots.push(activeLot);
       }
@@ -318,12 +324,15 @@ export async function sendFireDealAlerts() {
         ok = !!r.ok;
       }
       if (ok) {
-        for (const lot of fireLots) {
-          await supabase.from('deal_alerts_sent').insert({
-            user_id: user.id, lot_number: lot.lot_number, sent_at: new Date().toISOString(),
-          });
-        }
         sent++;
+      } else {
+        // Send failed — RELEASE the claims so the next run retries rather than
+        // suppressing the alert forever.
+        await supabase
+          .from('deal_alerts_sent')
+          .delete()
+          .eq('user_id', user.id)
+          .in('lot_number', fireLots.map(l => l.lot_number));
       }
     }
     console.log(`[Alerts] Sent ${sent} grouped fire-deal alert(s).`);
