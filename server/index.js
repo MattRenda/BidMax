@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import { analyzeLot, analyzeBatch } from './routes/analyze.js';
 import { getEbayComps } from './routes/comps.js';
-import { getAffiliates, getItems as getBidrlItems, getLiveBid } from './routes/bidrl.js';
+import { getAffiliates, getItems as getBidrlItems, getLiveBid, getLotDetail } from './routes/bidrl.js';
 import { mobileAuthStart, mobileAuthCallback } from './routes/auth-mobile.js';
 import { runFullScan, getTopPicks, runScanForAffiliate, getLotAnalysis, getItems, requestLocation, getLocationRequests, revealLot, refreshBidsForAffiliate } from './routes/scanner.js';
 import { postDailyFind } from './routes/fb-daily-post.js';
@@ -60,6 +60,7 @@ app.post('/webhooks/revenuecat', express.json(), handleRevenueCatWebhook);
 app.get('/bidrl/affiliates', getAffiliates);
 app.get('/bidrl/items', getBidrlItems);
 app.get('/bidrl/bid/:lotNumber', getLiveBid);
+app.get('/api/lot-detail/:lotNumber', getLotDetail);
 
 // Mobile auth
 app.get('/auth/google-mobile/start', mobileAuthStart);

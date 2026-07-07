@@ -71,6 +71,88 @@ export async function getItems(req, res) {
   }
 }
 
+// GET /api/lot-detail/:lotNumber — full item view: our BidMax analysis (resale
+// gated to Pro) merged with the LIVE BidRL item (all images, description, bid
+// count) fetched by keyword search. Powers the in-app item screen + notification
+// deep-links. No schema change: images/description come fresh from BidRL.
+export async function getLotDetail(req, res) {
+  try {
+    const { lotNumber } = req.params;
+    if (!lotNumber) return res.status(400).json({ error: 'lotNumber required' });
+
+    const { createClient } = await import('@supabase/supabase-js');
+    const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+    // Pro gate for the resale value (same policy as the items list).
+    let isPro = false;
+    try {
+      const token = req.headers.authorization?.replace('Bearer ', '') || req.query.sessionToken;
+      if (token) {
+        const { validateSession } = await import('./auth.js');
+        const user = await validateSession(token);
+        isPro = user?.is_pro || false;
+      }
+    } catch {}
+
+    // BidMax side + live bid/end from our DB (kept fresh by the Pusher listener).
+    const { data: row } = await supabase
+      .from('analyzed_lots')
+      .select('title, item_url, image_url, resell_value, condition, current_bid, minimum_bid, ends_at, high_bidder')
+      .eq('lot_number', lotNumber)
+      .maybeSingle();
+
+    // Live BidRL item — one item via keyword search (returns all images + description).
+    let bidrl = null;
+    try {
+      const body = new URLSearchParams();
+      body.set('filters[keyword]', lotNumber);
+      const r = await fetch('https://www.bidrl.com/api/getitems', {
+        method: 'POST', headers: BIDRL_HEADERS, body: body.toString(),
+      });
+      const d = await r.json();
+      const items = d.items || [];
+      bidrl = items.find(i => i.lot_number === lotNumber) || items[0] || null;
+    } catch (e) {
+      console.error('[LotDetail] BidRL fetch error:', e.message);
+    }
+
+    if (!row && !bidrl) return res.status(404).json({ error: 'Not found' });
+
+    // Images: prefer BidRL's full array; fall back to our stored thumbnail.
+    const images = (bidrl?.images?.length)
+      ? bidrl.images
+          .map(im => ({ thumb: im.thumb_url || im.image_url, full: im.image_url || im.thumb_url }))
+          .filter(x => x.full)
+      : (row?.image_url ? [{ thumb: row.image_url, full: row.image_url }] : []);
+
+    const stripHtml = (s) => (s || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&#0?39;/g, "'")
+      .replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/\s+/g, ' ').trim();
+
+    return res.json({
+      lotNumber,
+      title: bidrl?.title || row?.title || '',
+      itemUrl: bidrl?.item_url || row?.item_url || '',
+      category: bidrl?.category_name || '',
+      images,
+      description: stripHtml(bidrl?.description).slice(0, 1200),
+      currentBid: parseFloat(row?.current_bid ?? bidrl?.current_bid) || 0,
+      minimumBid: parseFloat(row?.minimum_bid ?? bidrl?.minimum_bid) || 0,
+      bidCount: parseInt(bidrl?.bid_count) || 0,
+      endsAt: row?.ends_at || (bidrl?.end_time ? parseInt(bidrl.end_time) + 7200 : 0),
+      highBidder: row?.high_bidder || bidrl?.winner || bidrl?.high_bidder || null,
+      buyerPremium: parseFloat(bidrl?.buyer_premium) || 15,
+      condition: row?.condition || null,
+      resellValue: isPro ? (row?.resell_value ?? null) : null,
+    });
+  } catch (err) {
+    console.error('[LotDetail] error:', err.message);
+    res.status(500).json({ error: 'Failed to load lot' });
+  }
+}
+
 // GET /bidrl/bid/:lotNumber — live current bid for a single item
 export async function getLiveBid(req, res) {
   try {
