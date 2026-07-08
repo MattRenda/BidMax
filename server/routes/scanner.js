@@ -207,6 +207,26 @@ function toFullResUrl(url) {
   return url.replace(/_t(\.[a-zA-Z]+)(\?.*)?$/, '$1$2');
 }
 
+// Thumbnail-only fetch for CLASSIFICATION. A ~320px thumb costs ~10x fewer
+// image tokens than full-res, and ID quality holds because the description text
+// (product name, retailer link) now carries most of the identification signal.
+async function fetchThumbBase64(url) {
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { timeout: 8000 });
+    if (!res.ok) return null;
+    const contentType = res.headers.get('content-type') || 'image/jpeg';
+    const buffer = await res.arrayBuffer();
+    if (buffer.byteLength > 5_000_000) return null;
+    return { base64: Buffer.from(buffer).toString('base64'), mediaType: contentType.split(';')[0], res: 'thumb' };
+  } catch { return null; }
+}
+
+// Strip HTML tags + entities from a BidRL description for the classify prompt.
+function stripHtmlText(s) {
+  return decodeHtmlEntities(String(s || '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+}
+
 // Fetch image as base64 — tries full-res first, falls back to thumbnail
 // Returns { base64, mediaType, res: 'full'|'thumb' } or null
 async function fetchImageBase64(url) {
@@ -285,7 +305,10 @@ async function classifyItems(items, imageData, tracker) {
   const lotsText = items.map(item => {
     const cleanTitle = item.title.replace(/[-–—]?\s*retail\s*\$?[\d,]+(\.\d+)?/gi, '').trim();
     const auctionHint = item.auction_title ? ` [Auction: ${item.auction_title.slice(0, 60)}]` : '';
-    return `${item.lot_number}: ${cleanTitle}${auctionHint}`;
+    // Description often names the exact product (retailer link) AND notes
+    // damage/missing parts that the box photo hides. Cheap text tokens, high signal.
+    const desc = stripHtmlText(item.description).slice(0, 220);
+    return `${item.lot_number}: ${cleanTitle}${auctionHint}${desc ? ` [Desc: ${desc}]` : ''}`;
   }).join('\n');
 
   const contentBlocks = [{
@@ -303,8 +326,10 @@ IDENTIFICATION RULES:
 
 CONDITION RULES (priority order):
 1. Title keywords first: NEW/SEALED/NIB → new; OPEN BOX/OPENED → open_box; USED/AS-IS/DAMAGED/PARTS → used_fair; GENTLY USED/REFURBISHED → used_good
-2. Auction title patterns: "returns"/"dot com"/"overstock" → likely new; "undeliverable"/"variety" → likely open_box; "liquidation"/"salvage"/"estate" → likely used
-3. Image only if title and auction give no signal
+2. [Desc: ...] text: damage / broken / cracked / missing / incomplete / as-is / untested notes OVERRIDE a clean box photo → used_fair (and lower estResale accordingly)
+3. Later photos: you may get up to THREE photos per lot — the first is usually the sealed box or product shot; the following photos show the actual item and its condition. Damage, missing pieces, or heavy wear visible in ANY later photo means used_fair, even if the first photo looks new. NEVER call a lot "new" from the box shot alone when a later photo contradicts it.
+4. Auction title patterns: "returns"/"dot com"/"overstock" → likely new; "undeliverable"/"variety" → likely open_box; "liquidation"/"salvage"/"estate" → likely used
+5. First image only if nothing above gives a signal
 
 CATEGORY: pick the single best fit from:
 electronics, appliance_large, appliance_small, furniture, tools, sporting_goods, gym_equipment, outdoor, toys, kitchenware, home_goods, apparel, health_beauty, automotive, media, collectible, bulk_lot, other
@@ -321,11 +346,11 @@ brand/model may be null if genuinely not identifiable. sizeClass: small|medium|l
   }];
 
   items.forEach((item, i) => {
-    const img = imageData[i];
-    if (img) {
-      contentBlocks.push({ type: 'text', text: `Image for ${item.lot_number}:` });
+    const photos = imageData[i] || [];
+    photos.forEach((img, j) => {
+      contentBlocks.push({ type: 'text', text: `Photo ${j + 1} for ${item.lot_number}:` });
       contentBlocks.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data: img.base64 } });
-    }
+    });
   });
 
   const maxTok = Math.min(150 * items.length + 300, 4096);
@@ -660,16 +685,26 @@ function priceFromHeuristic(tag) {
 }
 
 async function analyzeBatchWithVision(items, tracker) {
+  // Up to the FIRST THREE thumbnails per lot: photo 1 is the box/product shot;
+  // photos 2-3 show the actual contents and condition (first-image-only
+  // classification priced damaged goods as new). The LAST photo is the lot tag
+  // — useless — so we take from the front, never the tail. Thumbs keep this
+  // cheaper than the old single full-res image (~10x fewer tokens each).
   const imageData = await Promise.all(
-    items.map(item => fetchImageBase64(item.thumb_url || item.image_url))
+    items.map(async (item) => {
+      const imgs = Array.isArray(item.images) ? item.images : [];
+      const urls = imgs.slice(0, 3).map(im => im.thumb_url || im.image_url).filter(Boolean);
+      if (urls.length === 0 && (item.thumb_url || item.image_url)) urls.push(item.thumb_url || item.image_url);
+      const fetched = await Promise.all(urls.map(fetchThumbBase64));
+      return fetched.filter(Boolean);
+    })
   );
 
-  // Track image resolution outcomes
+  // Track image outcomes (thumb-only now; full-res counter stays for the report)
   if (tracker) {
-    for (const img of imageData) {
-      if (!img) tracker.imagesFailed++;
-      else if (img.res === 'full') tracker.imagesFullRes++;
-      else tracker.imagesThumb++;
+    for (const photos of imageData) {
+      if (photos.length === 0) tracker.imagesFailed++;
+      tracker.imagesThumb += photos.length;
     }
   }
 
