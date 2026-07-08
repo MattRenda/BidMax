@@ -292,20 +292,20 @@ export async function sendFireDealAlerts() {
           continue;
         }
 
-        // Atomically CLAIM this (user, lot) BEFORE sending. upsert + ignoreDuplicates
-        // runs INSERT ... ON CONFLICT DO NOTHING; .select() returns a row ONLY if
-        // THIS run inserted it. If empty, another cron run — or a second server
-        // instance during a deploy — already claimed it, so skip. This is what kills
-        // the DUPLICATE fire-deal pushes (the old select-then-insert had a race that
-        // could double-send). Requires a unique index on (user_id, lot_number).
-        const { data: claimed } = await supabase
+        // Atomically CLAIM this (user, lot) BEFORE sending so overlapping cron runs
+        // / replicas can't double-send. A plain INSERT hits the unique index on
+        // (user_id, lot_number): the first run inserts and wins; any concurrent or
+        // later run gets a 23505 unique-violation and skips. Using the error code is
+        // unambiguous — unlike upsert().select(), whose conflict-return behavior is
+        // fuzzy and could "claim" every run (re-sending each cron tick = the exact
+        // duplicate we were chasing). Requires the unique index on (user_id, lot_number).
+        const { error: claimErr } = await supabase
           .from('deal_alerts_sent')
-          .upsert(
-            { user_id: user.id, lot_number: lot.lot_number, sent_at: new Date().toISOString() },
-            { onConflict: 'user_id,lot_number', ignoreDuplicates: true }
-          )
-          .select('lot_number');
-        if (!claimed || claimed.length === 0) continue; // already claimed elsewhere
+          .insert({ user_id: user.id, lot_number: lot.lot_number, sent_at: new Date().toISOString() });
+        if (claimErr) {
+          if (claimErr.code !== '23505') console.error('[Alerts] claim error:', claimErr.message);
+          continue; // already alerted for this lot (or claim failed) → do NOT send
+        }
 
         fireLots.push(activeLot);
       }
