@@ -33,15 +33,17 @@ async function handleBidEvent(lotNumber, data, affiliateId) {
     const newMin = parseFloat(bidData.minimum_bid) || 0;
     const endsAt = bidData.end_time ? parseInt(bidData.end_time) + (2 * 3600) : undefined;
 
+    // A bid event means the high bidder just changed. Pusher exposes the readable
+    // handle as `highbidder_username` (note: `high_bidder` here is the numeric
+    // user ID, not the name). Declared HERE (not inside the if) because the SSE
+    // broadcast below also reads it — scoping it inside threw a ReferenceError
+    // that killed every live-bid broadcast to connected apps.
+    const winnerName = bidData.highbidder_username || null;
+
     // Bids only ever increase. Guard the bid update to only RAISE the value so
     // out-of-order event delivery (possible after a reconnect) can't write a
     // stale lower bid over a newer one. Consistent with the scan's bid-refresh.
     if (newBid > 0) {
-      // A bid event means the high bidder just changed. Pusher exposes the
-      // readable handle as `highbidder_username` (note: `high_bidder` here is the
-      // numeric user ID, not the name). Write it alongside the raised bid, guarded
-      // so a stale lower bid never overwrites.
-      const winnerName = bidData.highbidder_username || null;
       const bidUpdate = { current_bid: newBid, minimum_bid: newMin };
       if (winnerName) bidUpdate.high_bidder = winnerName;
       const { error } = await supabase
