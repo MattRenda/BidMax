@@ -199,6 +199,17 @@ function decodeHtmlEntities(str) {
     .replace(/&amp;/g, '&');
 }
 
+// Per-lot TRUE end epoch. BidRL returns two fields: `ends` (the auction's BASE
+// close, identical for every lot) and `end_time` (this lot's STAGGERED close —
+// lots close 45-60s apart in sequence). Storing `ends` made late-sequence lots
+// show up to ~45 min less time than reality; always prefer `end_time`. Both are
+// raw values needing the +7200 correction (verified against BidRL's displayed
+// close times).
+function trueEndsAt(item) {
+  const raw = parseInt(item.end_time) || parseInt(item.ends) || 0;
+  return raw ? raw + 7200 : null;
+}
+
 // Convert a BidRL thumbnail URL to full resolution
 // Thumbnails end in _t.jpg; full-size drops the _t suffix
 function toFullResUrl(url) {
@@ -887,7 +898,7 @@ async function scanAffiliate(affiliateId, maxItems = null) {
       for (const item of existingItems) {
         const newBid = parseFloat(item.current_bid) || 0;
         const newMin = parseFloat(item.minimum_bid) || 0;
-        const endsAt = item.ends ? parseInt(item.ends) + 7200 : null;
+        const endsAt = trueEndsAt(item);
 
         // 1) Raise the bid only if our fetched value is higher than what's stored
         //    (Pusher may have written a fresher/higher value already).
@@ -944,7 +955,7 @@ async function scanAffiliate(affiliateId, maxItems = null) {
             item_id: item.id || null,
             current_bid: parseFloat(item.current_bid) || 0,
             minimum_bid: parseFloat(item.minimum_bid) || 0,
-            ends_at: item.ends ? parseInt(item.ends) + 7200 : null,
+            ends_at: trueEndsAt(item),
             high_bidder: item.winner || item.highbidder_username || null,
             resell_value: Math.round(resellValue) || 0,
             condition: result.condition || 'unknown',
@@ -1000,7 +1011,7 @@ export async function refreshBidsForAffiliate(affiliateId) {
     // fetch can't clobber a fresher Pusher value (BidRL bids only increase).
     for (const item of allItems) {
       const newBid = parseFloat(item.current_bid) || 0;
-      const endsAt = item.ends ? parseInt(item.ends) + 7200 : null;
+      const endsAt = trueEndsAt(item);
 
       if (newBid > 0) {
         await supabase

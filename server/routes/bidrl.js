@@ -170,12 +170,13 @@ export async function getLiveBid(req, res) {
 
     if (!dbItem) return res.status(404).json({ error: 'Item not found' });
 
-    // ends_at carries a +2h (7200s) offset (added at ingestion). Subtract it to
-    // get the true epoch end, then compute live seconds remaining at request time.
-    // The client should still tick this down between polls — it's a live countdown,
-    // so a stored value would be stale instantly; this is fresh as of THIS request.
-    const rawEnd = dbItem.ends_at ? dbItem.ends_at - 7200 : 0;
-    const secondsRemaining = rawEnd ? Math.max(0, rawEnd - Math.floor(Date.now() / 1000)) : null;
+    // Stored ends_at IS the true epoch end (verified against BidRL's displayed
+    // close times — the raw feed values get +7200 applied at ingestion). The old
+    // extra -7200 here made secondsRemaining 2h short. The client should still
+    // tick this down between polls; it's fresh as of THIS request.
+    const secondsRemaining = dbItem.ends_at
+      ? Math.max(0, dbItem.ends_at - Math.floor(Date.now() / 1000))
+      : null;
 
     return res.json({
       lotNumber,
