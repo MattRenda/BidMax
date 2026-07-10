@@ -125,15 +125,19 @@ export async function getLotDetail(req, res) {
           .filter(x => x.full)
       : (row?.image_url ? [{ thumb: row.image_url, full: row.image_url }] : []);
 
+    // Decodes tags AND entities — including NUMERIC ones (&#34; = the inch marks
+    // BidRL uses in titles like 60&#34; x 30&#34;), which the old version missed.
     const stripHtml = (s) => (s || '')
       .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&#0?39;/g, "'")
-      .replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(parseInt(n, 10)))
+      .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+      .replace(/&nbsp;/g, ' ').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
       .replace(/\s+/g, ' ').trim();
 
     return res.json({
       lotNumber,
-      title: bidrl?.title || row?.title || '',
+      title: stripHtml(bidrl?.title) || row?.title || '',
       itemUrl: bidrl?.item_url || row?.item_url || '',
       category: bidrl?.category_name || '',
       images,
