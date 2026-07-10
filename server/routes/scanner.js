@@ -338,7 +338,7 @@ IDENTIFICATION RULES:
 CONDITION RULES (priority order):
 1. Title keywords first: NEW/SEALED/NIB → new; OPEN BOX/OPENED → open_box; USED/AS-IS/DAMAGED/PARTS → used_fair; GENTLY USED/REFURBISHED → used_good
 2. [Desc: ...] text: damage / broken / cracked / missing / incomplete / as-is / untested notes OVERRIDE a clean box photo → used_fair (and lower estResale accordingly)
-3. Later photos: you may get up to THREE photos per lot — the first is usually the sealed box or product shot; the following photos show the actual item and its condition. Damage, missing pieces, or heavy wear visible in ANY later photo means used_fair, even if the first photo looks new. NEVER call a lot "new" from the box shot alone when a later photo contradicts it.
+3. Later photos: you may get SEVERAL photos per lot — the first is usually the sealed box or product shot; the following photos show the actual item and its condition. Damage, missing pieces, or heavy wear visible in ANY later photo means used_fair, even if the first photo looks new. NEVER call a lot "new" from the box shot alone when a later photo contradicts it.
 4. Auction title patterns: "returns"/"dot com"/"overstock" → likely new; "undeliverable"/"variety" → likely open_box; "liquidation"/"salvage"/"estate" → likely used
 5. First image only if nothing above gives a signal
 
@@ -605,6 +605,19 @@ const AI_TRUST_CEILING_GENERIC  = 80;
 // to justify the search cost. Heuristic or AI estimate is sufficient.
 const NO_SEARCH_CATEGORIES = new Set(['apparel', 'media', 'health_beauty', 'collectible']);
 
+// Categories that don't realistically resell locally (per BidRL cofounder):
+// bulky install-it fixtures and window treatments get listed but almost never
+// sell used, so comp/AI prices wildly overstate them. Matched against the title
+// plus the classifier's subtype/keywords; final resale is cut 90%. NOTE: bare
+// "tub" is deliberately NOT matched — storage tubs/totes DO sell.
+const LOW_DEMAND_MULT = 0.1;
+const LOW_DEMAND_RE = /\b(bath\s?tubs?|freestanding tubs?|soaking tubs?|garden tubs?|tub surrounds?|shower (doors?|pans?|bases?|walls?|surrounds?|stalls?|enclosures?)|toilets?|bidets?|blinds?|shades?|window treatments?|shutters?|curtain rods?)\b/i;
+function isLowDemand(tag) {
+  const hay = [tag?._title, tag?.subtype, ...(Array.isArray(tag?.keywords) ? tag.keywords : [])]
+    .filter(Boolean).join(' ');
+  return LOW_DEMAND_RE.test(hay);
+}
+
 // A lot that is only PART of a multi-box/multi-piece item — "1 of 2 boxes",
 // "box 2 of 3", "part 1 of 2", "2 of 2 cartons". A single box can't be resold as a
 // complete item, so its resale value is ~$0; pricing it as a whole item creates
@@ -616,6 +629,8 @@ function shouldSearch(tag) {
   if (!tag) return false;
   // Don't spend a comp search on a partial/multi-box lot — it gets zeroed anyway.
   if (isPartialLot(tag._title)) return false;
+  // Nor on low-demand fixtures/window treatments — the value gets cut 90% anyway.
+  if (isLowDemand(tag)) return false;
   const est = Number(tag.estResale) || 0;
   const isBranded = !!(tag.brand && tag.model);
 
@@ -696,15 +711,16 @@ function priceFromHeuristic(tag) {
 }
 
 async function analyzeBatchWithVision(items, tracker) {
-  // Up to the FIRST THREE thumbnails per lot: photo 1 is the box/product shot;
-  // photos 2-3 show the actual contents and condition (first-image-only
-  // classification priced damaged goods as new). The LAST photo is the lot tag
-  // — useless — so we take from the front, never the tail. Thumbs keep this
-  // cheaper than the old single full-res image (~10x fewer tokens each).
+  // ALL photos per lot except the trailing lot-tag shot (useless), capped at 6
+  // as a cost guard: photo 1 is the box/product shot; the rest show the actual
+  // contents and condition wherever the damage appears in the sequence
+  // (first-image-only classification priced damaged goods as new). Thumbnails
+  // keep this cheaper than the old single full-res image (~10x fewer tokens each).
   const imageData = await Promise.all(
     items.map(async (item) => {
       const imgs = Array.isArray(item.images) ? item.images : [];
-      const urls = imgs.slice(0, 3).map(im => im.thumb_url || im.image_url).filter(Boolean);
+      const usable = imgs.length > 1 ? imgs.slice(0, -1) : imgs; // drop the tag photo
+      const urls = usable.slice(0, 6).map(im => im.thumb_url || im.image_url).filter(Boolean);
       if (urls.length === 0 && (item.thumb_url || item.image_url)) urls.push(item.thumb_url || item.image_url);
       const fetched = await Promise.all(urls.map(fetchThumbBase64));
       return fetched.filter(Boolean);
@@ -791,6 +807,13 @@ async function analyzeBatchWithVision(items, tracker) {
         source = 'heuristic';
         if (tracker) tracker.itemsHeuristic++;
       }
+    }
+
+    // Low-demand fixtures/window treatments: hard 90% cut — they list high but
+    // almost never sell locally (BidRL cofounder guidance).
+    if (isLowDemand(tag)) {
+      resale = Math.round(resale * LOW_DEMAND_MULT);
+      source = `${source}+low-demand`;
     }
 
     // Partial/multi-box lots ("1 of 2 boxes", "box 2 of 3") aren't a complete,

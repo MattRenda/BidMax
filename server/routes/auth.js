@@ -278,12 +278,22 @@ export async function deleteAccount(req, res) {
       return res.status(400).json({ error: 'No session or device ID provided' });
     }
 
-    // Delete all user data — order matters for FK constraints
+    // Delete all user data — every table referencing users.id must go FIRST or
+    // the users delete fails on FK constraints. NOTE: supabase-js does NOT throw
+    // on query errors — the old code ignored them and returned 200 even when the
+    // users row survived (an FK violation from user_settings/deal_alerts_sent),
+    // which is exactly how "delete account" silently didn't work.
     if (userId) {
       await supabase.from('sessions').delete().eq('user_id', userId);
       await supabase.from('usage').delete().eq('user_id', userId);
       await supabase.from('location_requests').delete().eq('user_id', userId);
-      await supabase.from('users').delete().eq('id', userId);
+      await supabase.from('user_settings').delete().eq('user_id', userId);
+      await supabase.from('deal_alerts_sent').delete().eq('user_id', userId);
+      const { error: userErr } = await supabase.from('users').delete().eq('id', userId);
+      if (userErr) {
+        console.error('[DeleteAccount] users delete failed:', userErr.message);
+        return res.status(500).json({ error: 'Account deletion failed — please try again or contact support.' });
+      }
     }
 
     // Delete device usage rows regardless of auth
@@ -297,6 +307,105 @@ export async function deleteAccount(req, res) {
     return res.status(500).json({ error: e.message });
   }
 }
+// ── Email code login (passwordless) ─────────────────────────────────────────
+// Older-people-friendly sign-in: enter your email → get a 6-digit code → enter
+// the code. No password to create/remember/reset. Codes live in
+// email_login_codes (one active code per email, 10-min TTL, 5 attempts).
+// A verified email that matches an existing Google/Apple account signs into
+// THAT account (email ownership was just proven), so no duplicate accounts.
+const EMAIL_CODE_TTL_MIN = 10;
+const EMAIL_CODE_MAX_ATTEMPTS = 5;
+const LOGIN_FROM_EMAIL = process.env.ALERT_FROM_EMAIL || 'BidMax <alerts@bidmaxapp.com>';
+
+async function sendLoginCodeEmail(to, code) {
+  if (!process.env.RESEND_API_KEY) { console.error('[EmailLogin] RESEND_API_KEY not set'); return false; }
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: LOGIN_FROM_EMAIL,
+        to,
+        subject: `${code} is your BidMax sign-in code`,
+        html: `
+          <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:420px;margin:0 auto;color:#0f172a;">
+            <h2 style="margin-bottom:4px;">Your BidMax sign-in code</h2>
+            <p style="color:#475569;margin-top:0;">Enter this code in the app. It expires in ${EMAIL_CODE_TTL_MIN} minutes.</p>
+            <div style="font-size:36px;font-weight:800;letter-spacing:8px;background:#f1f5f9;border-radius:12px;padding:18px;text-align:center;">${code}</div>
+            <p style="color:#94a3b8;font-size:12px;margin-top:16px;">Didn't request this? You can ignore this email.</p>
+          </div>`,
+      }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (res.ok && json.id) return true;
+    console.error('[EmailLogin] Resend error:', json.message || res.status);
+    return false;
+  } catch (e) { console.error('[EmailLogin] send error:', e.message); return false; }
+}
+
+// POST /auth/email/start { email } → emails a 6-digit code
+export async function emailLoginStart(req, res) {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Enter a valid email address' });
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = new Date(Date.now() + EMAIL_CODE_TTL_MIN * 60000).toISOString();
+    const { error } = await supabase.from('email_login_codes').upsert(
+      { email, code, expires_at: expiresAt, attempts: 0, created_at: new Date().toISOString() },
+      { onConflict: 'email' }
+    );
+    if (error) throw error;
+    const sent = await sendLoginCodeEmail(email, code);
+    if (!sent) return res.status(500).json({ error: 'Could not send the code — please try again' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[EmailLogin] start:', e.message);
+    res.status(500).json({ error: 'Could not send the code — please try again' });
+  }
+}
+
+// POST /auth/email/verify { email, code } → { sessionToken }
+export async function emailLoginVerify(req, res) {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const code = String(req.body?.code || '').trim();
+    if (!email || !/^\d{6}$/.test(code)) {
+      return res.status(400).json({ error: 'Enter the 6-digit code from your email' });
+    }
+    const { data: row } = await supabase
+      .from('email_login_codes').select('*').eq('email', email).maybeSingle();
+    if (!row) return res.status(400).json({ error: 'Request a new code' });
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'That code expired — request a new one' });
+    }
+    if (row.attempts >= EMAIL_CODE_MAX_ATTEMPTS) {
+      return res.status(429).json({ error: 'Too many attempts — request a new code' });
+    }
+    if (row.code !== code) {
+      await supabase.from('email_login_codes').update({ attempts: row.attempts + 1 }).eq('email', email);
+      return res.status(400).json({ error: 'That code isn’t right — check the email and try again' });
+    }
+    await supabase.from('email_login_codes').delete().eq('email', email);
+
+    // Find-or-create by the (now verified) email. Matching an existing
+    // Google/Apple account signs into it — ownership of the address was proven.
+    let { data: user } = await supabase.from('users').select('*').eq('email', email).maybeSingle();
+    if (!user) {
+      const { data: created, error: insErr } = await supabase
+        .from('users').insert({ email, google_id: `email:${email}` }).select().single();
+      if (insErr) throw insErr;
+      user = created;
+    }
+    const sessionToken = await createSession(user.id);
+    res.json({ sessionToken });
+  } catch (e) {
+    console.error('[EmailLogin] verify:', e.message);
+    res.status(500).json({ error: 'Sign-in failed — please try again' });
+  }
+}
+
 export async function logout(req, res) {
   try {
     const token = req.headers.authorization?.replace('Bearer ', '');

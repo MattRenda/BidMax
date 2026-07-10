@@ -110,10 +110,12 @@ app.get('/api/location-bidders', getLocationBidders);
 // Auth + billing routes — load lazily so startup errors don't kill the server
 async function loadAuthRoutes() {
   try {
-    const { googleAuth, getMe, logout, deleteAccount, appleSignIn, createSession, redeemPromo } = await import('./routes/auth.js');
+    const { googleAuth, getMe, logout, deleteAccount, appleSignIn, createSession, redeemPromo, emailLoginStart, emailLoginVerify } = await import('./routes/auth.js');
     const { createCheckout, createPortal, handleWebhook } = await import('./routes/billing.js');
     app.post('/auth/google', authLimiter, googleAuth);
     app.post('/auth/apple', authLimiter, appleSignIn);
+    app.post('/auth/email/start', authLimiter, emailLoginStart);
+    app.post('/auth/email/verify', authLimiter, emailLoginVerify);
     app.post('/auth/redeem-promo', redeemPromo);
     app.get('/auth/me', getMe);
     app.post('/auth/logout', logout);
