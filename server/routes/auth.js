@@ -440,8 +440,33 @@ export async function redeemPromo(req, res) {
       return res.status(400).json({ error: 'Promo code already redeemed' });
     }
 
+    // Device lock: ONE promo trial per physical device, ever — new accounts on
+    // the same phone can't farm repeat trials (account-level check alone is
+    // trivially dodged via fresh emails). The claim is inserted BEFORE granting:
+    // a unique-violation (23505) means this device already used its trial.
+    // Clients that predate the OTA send no device id — those fall through to
+    // the account-level check only (they harden as the OTA propagates).
+    const deviceId = req.headers['x-device-id'] || req.body?.deviceId || null;
+    if (deviceId) {
+      const { error: claimErr } = await supabase
+        .from('promo_redemptions')
+        .insert({ device_id: String(deviceId), code: String(promoCode).toUpperCase(), user_id: user.id });
+      if (claimErr) {
+        if (claimErr.code === '23505') {
+          return res.status(400).json({ error: 'A free trial has already been redeemed on this device' });
+        }
+        // Table missing / transient error → don't block legitimate redemptions.
+        console.error('[Promo] device-claim error:', claimErr.message);
+      }
+    }
+
     const result = await redeemPromoCode(user.id, promoCode);
     if (!result) {
+      // Release the device claim so a typo'd code doesn't burn the device's trial.
+      if (deviceId) {
+        await supabase.from('promo_redemptions').delete()
+          .eq('device_id', String(deviceId)).eq('user_id', user.id);
+      }
       return res.status(400).json({ error: 'Invalid or expired promo code' });
     }
 
