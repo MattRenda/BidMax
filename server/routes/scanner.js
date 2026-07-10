@@ -866,6 +866,40 @@ async function scanAffiliate(affiliateId, maxItems = null) {
   // costs nothing but storage while preventing expensive re-analysis churn.
   const now = Math.floor(Date.now() / 1000);
   const sevenDaysAgo = now - (7 * 86400);
+
+  // ARCHIVE before delete: the last current_bid on an ended lot IS the hammer
+  // price (Pusher keeps bids live through close). sold_lots is the durable
+  // record of what things actually go for — our own comp database, and the
+  // ground truth for grading resale estimates. final_bid 0 = went unsold.
+  const { data: endedRows } = await supabase
+    .from('analyzed_lots')
+    .select('*')
+    .eq('affiliate_id', String(affiliateId))
+    .lt('ends_at', sevenDaysAgo);
+  if (endedRows?.length) {
+    const archive = endedRows.map(r => ({
+      lot_number: r.lot_number,
+      affiliate_id: r.affiliate_id,
+      title: r.title,
+      condition: r.condition,
+      resell_value: r.resell_value,
+      final_bid: parseFloat(r.current_bid) || 0,
+      high_bidder: r.high_bidder,
+      ends_at: r.ends_at,
+      auction_id: r.auction_id,
+      auction_title: r.auction_title,
+      item_url: r.item_url,
+      image_url: r.image_url,
+      lot_notes: r.lot_notes,
+      analyzed_at: r.analyzed_at,
+    }));
+    const { error: archErr } = await supabase
+      .from('sold_lots')
+      .upsert(archive, { onConflict: 'lot_number,affiliate_id', ignoreDuplicates: true });
+    if (archErr) console.error('[Scan] sold_lots archive error (rows still deleted):', archErr.message);
+    else console.log(`[Scan] Archived ${archive.length} ended lots to sold_lots`);
+  }
+
   const { error: cleanupError } = await supabase
     .from('analyzed_lots')
     .delete()
