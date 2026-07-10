@@ -96,7 +96,7 @@ function buildEmail(user, lot) {
     html: `
       <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:0 auto;color:#0f172a;">
         ${LOGO_URL ? `<div style="text-align:center;padding:8px 0 16px;"><img src="${LOGO_URL}" alt="BidMax" style="height:40px;"></div>` : ''}
-        <h2 style="color:#dc2626;">🔥 Fire Deal Ending Soon</h2>
+        <h2 style="color:#dc2626;">🔥 Hot Deal Ending Soon</h2>
         <p style="font-size:16px;font-weight:600;">${lot.title}</p>
         ${lot.image_url ? `<img src="${lot.image_url}" alt="" style="width:100%;max-width:480px;border-radius:8px;">` : ''}
         <table style="width:100%;font-size:15px;margin:16px 0;">
@@ -108,7 +108,7 @@ function buildEmail(user, lot) {
         </table>
         <a href="${lot.item_url || APP_LANDING}" style="display:inline-block;background:#16a34a;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;">View Lot on BidRL</a>
         <p style="font-size:12px;color:#64748b;margin-top:24px;">
-          You're receiving this because you enabled Fire Deal alerts in BidMax.
+          You're receiving this because you enabled Hot Deal alerts in BidMax.
           <a href="${unsubUrl}">Unsubscribe</a><br>BidMax · ${APP_LANDING}
         </p>
       </div>`,
@@ -120,7 +120,7 @@ function buildGroupedEmail(user, lots) {
   const count = lots.length;
   const subject = count === 1
     ? `🔥 ${lots[0].title.slice(0, 50)}`
-    : `🔥 ${count} Fire Deals Ending Soon`;
+    : `🔥 ${count} Hot Deals Ending Soon`;
 
   const lotSections = lots.map((lot, i) => {
     const { maxBid, expectedProfit } = calcBid(lot.resell_value, user.target_margin, user.buyers_premium);
@@ -145,10 +145,10 @@ function buildGroupedEmail(user, lots) {
   const html = `
     <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:520px;margin:0 auto;color:#0f172a;">
       ${LOGO_URL ? `<div style="text-align:center;padding:8px 0 16px;"><img src="${LOGO_URL}" alt="BidMax" style="height:40px;"></div>` : ''}
-      <h2 style="color:#dc2626;">🔥 ${count === 1 ? 'Fire Deal Ending Soon' : `${count} Fire Deals Ending Soon`}</h2>
+      <h2 style="color:#dc2626;">🔥 ${count === 1 ? 'Hot Deal Ending Soon' : `${count} Hot Deals Ending Soon`}</h2>
       ${lotSections}
       <p style="font-size:12px;color:#64748b;margin-top:24px;">
-        You're receiving this because you enabled Fire Deal alerts in BidMax.
+        You're receiving this because you enabled Hot Deal alerts in BidMax.
         <a href="${unsubUrl}">Unsubscribe</a><br>BidMax · ${APP_LANDING}
       </p>
     </div>`;
@@ -215,7 +215,7 @@ function buildPushMessage(user, lots) {
   const n = lots.length;
   const top = lots.reduce((a, b) => (b.resell_value > a.resell_value ? b : a), lots[0]);
   const mins = minutesLeft(top.ends_at);
-  const title = n === 1 ? '🔥 Fire deal ending soon' : `🔥 ${n} fire deals ending soon`;
+  const title = n === 1 ? '🔥 Hot deal ending soon' : `🔥 ${n} hot deals ending soon`;
   const body = n === 1
     ? `${top.title.slice(0, 90)} · ~${mins} min left`
     : `Top: ${top.title.slice(0, 55)} +${n - 1} more · ending within ~${Math.round(ALERT_WINDOW_SEC / 60)} min`;
