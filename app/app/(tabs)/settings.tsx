@@ -323,11 +323,11 @@ export default function SettingsScreen() {
           isn't affiliated with BidRL.
         </Text>
         <View style={styles.legalRow}>
-          <TouchableOpacity onPress={() => Linking.openURL('https://bidmax.app/terms')}>
+          <TouchableOpacity onPress={() => Linking.openURL('https://bidmax-production.up.railway.app/terms.html')}>
             <Text style={styles.legalLink}>Terms</Text>
           </TouchableOpacity>
           <Text style={styles.legalDot}>·</Text>
-          <TouchableOpacity onPress={() => Linking.openURL('https://bidmax.app/privacy')}>
+          <TouchableOpacity onPress={() => Linking.openURL('https://bidmax-production.up.railway.app/privacy-policy.html')}>
             <Text style={styles.legalLink}>Privacy</Text>
           </TouchableOpacity>
         </View>
